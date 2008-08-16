@@ -62,20 +62,20 @@ Example test
 CREATE OR REPLACE FUNCTION test.test_inner_set_user_state() RETURNS VOID AS $$
 -- module: test_users
 DECLARE
-  v_user_id   integer;
-  v_user_rec  users%ROWTYPE;
+  user_id   integer;
+  user_rec  users%ROWTYPE;
 BEGIN
   <<MAIN>>
   BEGIN
     -- Create dummy records
-    INSERT INTO users (login_name) VALUES ('test1') RETURNING user_id INTO v_user_id;
+    INSERT INTO users (login_name) VALUES ('test1') RETURNING user_id INTO user_id;
     
     -- Run the proc
-    PERFORM "inner".set_user_state(v_user_id);
+    PERFORM "inner".set_user_state(user_id);
     
     -- The proc MUST set users.state to 'active';
-    SELECT INTO v_user_rec * FROM users WHERE user_id = v_user_id;
-    PERFORM test.assert_equal(v_user_rec.state, 'active');
+    SELECT INTO user_rec * FROM users WHERE user_id = user_id;
+    PERFORM test.assert_equal(user_rec.state, 'active');
   END MAIN;
 
   -- ALWAYS RAISE EXCEPTION at the end of test procs to rollback!
@@ -91,21 +91,21 @@ Epic.sql includes some functions to make tests easier to write (and shorter).
 The following functions all return void, raising an exception if the assertion
 doesn't hold:
 
-    * test.assert(p_assertion boolean, p_msg text): this is the 'catch-all'
+    * test.assert(assertion boolean, msg text): this is the 'catch-all'
         to assert anything that can be evaluated to a boolean. For example,
         PERFORM test.assert(substring(a from b), b||" not found in "||a);
-    * test.assert_equal(p_1 anyelement, p_2 anyelement)
-    * test.assert_not_equal(p_1 anyelement, p_2 anyelement)
-    * test.assert_less_than(p_1 anyelement, p_2 anyelement)
-    * test.assert_values(p_column text, p_source text, p_expected anyarray):
-        Raises an exception if SELECT p_column FROM p_source != p_expected.
+    * test.assert_equal(1 anyelement, 2 anyelement)
+    * test.assert_not_equal(1 anyelement, 2 anyelement)
+    * test.assert_less_than(1 anyelement, 2 anyelement)
+    * test.assert_values(column text, source text, expected anyarray):
+        Raises an exception if SELECT column FROM source != expected.
     
-    * test.assert_raises(p_call text, p_errm text, p_state text): Raises an
-      exception if 'SELECT * FROM [p_call];' does not raise p_errm.
+    * test.assert_raises(call text, errm text, state text): Raises an
+      exception if 'SELECT * FROM [call];' does not raise errm.
 
 Some return dynamic SQL:
     
-    * test.record_asserter(p_varname1 text, p_varname2 text, p_colnames text):
+    * test.record_asserter(varname1 text, varname2 text, colnames text):
         Returns EXECUTE-able SQL to assert equal fields for the two records.
         LOOP over its results and PERFORM each one.
 
@@ -183,17 +183,19 @@ BEGIN
   END;
   
   BEGIN
-    CREATE TABLE test.results (name text PRIMARY KEY, module text, ok boolean, errcode text, errmsg text);
+    CREATE TABLE test.results (name text PRIMARY KEY, module text,
+                               ok boolean, errcode text, errmsg text);
   EXCEPTION WHEN duplicate_table THEN
     NULL;
   END;
   
   BEGIN
-    CREATE TYPE test.suite_results AS (name text, module text, result text, errcode text, errmsg text);
+    CREATE TYPE test.suite_results AS (name text, module text, result text,
+                                       errcode text, errmsg text);
   EXCEPTION WHEN duplicate_table THEN
     NULL;
   END;
-
+  
   RETURN TRUE;
 END;
 $$ LANGUAGE plpgsql;
@@ -202,53 +204,55 @@ SELECT * FROM assert_test_schema();
 DROP FUNCTION assert_test_schema();
 
 
-CREATE OR REPLACE FUNCTION test.run_test(p_testname text) RETURNS boolean AS $$
+CREATE OR REPLACE FUNCTION test.run_test(testname text) RETURNS boolean AS $$
 -- Runs the named test, stores in test.results, and returns success.
 BEGIN
-  DELETE FROM test.results WHERE name = p_testname;
+  DELETE FROM test.results WHERE name = testname;
   
   BEGIN
-    EXECUTE 'SELECT * FROM test.' || p_testname || '();';
+    EXECUTE 'SELECT * FROM test.' || testname || '();';
   EXCEPTION WHEN OTHERS THEN
     IF SQLERRM = '[OK]' THEN
-      INSERT INTO test.results (name, ok) VALUES (p_testname, TRUE);
+      INSERT INTO test.results (name, ok) VALUES (testname, TRUE);
       RETURN TRUE;
     ELSE
       INSERT INTO test.results (name, ok, errcode, errmsg)
-        VALUES (p_testname, FALSE, SQLSTATE, SQLERRM);
+           VALUES (testname, FALSE, SQLSTATE, SQLERRM);
       RETURN FALSE;
     END IF;
   END;
-  RAISE EXCEPTION 'Test % did not raise an exception as it should have. Exceptions must ALWAYS be raised in test procedures for rollback.', p_testname;
+  
+  RAISE EXCEPTION 'Test % did not raise an exception as it should have. Exceptions must ALWAYS be raised in test procedures for rollback.', testname;
 END;
 $$ LANGUAGE plpgsql;
 
 
 CREATE OR REPLACE VIEW test.testnames AS
-    SELECT pg_proc.proname AS name,
+  SELECT pg_proc.proname AS name,
     substring(pg_proc.prosrc from E'--\\s+module[:]\\s+(\\S+)') AS module
-    FROM pg_namespace LEFT JOIN pg_proc
-    ON pg_proc.pronamespace::oid = pg_namespace.oid::oid
-    WHERE pg_namespace.nspname = 'test'
+  FROM pg_namespace LEFT JOIN pg_proc
+  ON pg_proc.pronamespace::oid = pg_namespace.oid::oid
+  WHERE pg_namespace.nspname = 'test'
     AND pg_proc.proname LIKE E'test\_%';
 
 
-CREATE OR REPLACE FUNCTION test.run_module(p_module text) RETURNS SETOF test.suite_results AS $$
+CREATE OR REPLACE FUNCTION test.run_module(modulename text) RETURNS SETOF test.suite_results AS $$
 -- Runs all tests in the given module, stores in test.results, and returns results.
 DECLARE
-  v_testname pg_proc.proname%TYPE;
-  output_record test.suite_results%ROWTYPE;
+  testname        pg_proc.proname%TYPE;
+  output_record   test.suite_results%ROWTYPE;
 BEGIN
-  FOR v_testname IN SELECT name, module FROM test.testnames WHERE module = p_module
+  FOR testname IN SELECT name, module FROM test.testnames WHERE module = modulename
   LOOP
-    PERFORM test.run_test(v_testname);
-    UPDATE test.results SET module = p_module WHERE name = v_testname;
+    PERFORM test.run_test(testname);
+    UPDATE test.results SET module = modulename WHERE name = testname;
   END LOOP;
   
   FOR output_record in
-    SELECT name, module, CASE WHEN ok=true THEN '[OK]' ELSE '[FAIL]' END, errcode, errmsg
+    SELECT name, module, CASE WHEN ok=true THEN '[OK]' ELSE '[FAIL]' END,
+           errcode, errmsg
     FROM test.results
-    WHERE module = p_module
+    WHERE module = modulename
   LOOP
     RETURN NEXT output_record;
   END LOOP;
@@ -259,16 +263,16 @@ $$ LANGUAGE plpgsql;
 CREATE OR REPLACE FUNCTION test.run_all() RETURNS SETOF test.suite_results AS $$
 -- Runs all known test functions, stores in test.results, and returns results.
 DECLARE
-  v_testname pg_proc.proname%TYPE;
-  v_module text;
+  testname pg_proc.proname%TYPE;
+  modulename text;
   output_record test.suite_results%ROWTYPE;
 BEGIN
-  FOR v_module in SELECT DISTINCT module FROM test.testnames ORDER BY module ASC
+  FOR modulename in SELECT DISTINCT module FROM test.testnames ORDER BY module ASC
   LOOP
-    FOR v_testname IN SELECT name FROM test.testnames WHERE module = v_module
+    FOR testname IN SELECT name FROM test.testnames WHERE module = modulename
     LOOP
-      PERFORM test.run_test(v_testname);
-      UPDATE test.results SET module = v_module WHERE name = v_testname;
+      PERFORM test.run_test(testname);
+      UPDATE test.results SET module = modulename WHERE name = testname;
     END LOOP;
   END LOOP;
   
@@ -285,109 +289,112 @@ $$ LANGUAGE plpgsql;
 ------------------------------ Test helpers ------------------------------
 
 
-CREATE OR REPLACE FUNCTION test.assert(p_assertion boolean, p_msg text) RETURNS VOID AS $$
--- Raises an exception (p_msg) if p_assertion is false.
+CREATE OR REPLACE FUNCTION test.assert(assertion boolean, msg text) RETURNS VOID AS $$
+-- Raises an exception (msg) if assertion is false.
 -- 
--- p_assertion may not be NULL.
+-- assertion may not be NULL.
 BEGIN
-  IF p_assertion IS NULL THEN
+  IF assertion IS NULL THEN
     RAISE EXCEPTION 'Assertion test may not be NULL.';
   END IF;
   
-  IF NOT p_assertion THEN
-    RAISE EXCEPTION '%', p_msg;
+  IF NOT assertion THEN
+    RAISE EXCEPTION '%', msg;
   END IF;
 END;
 $$ LANGUAGE plpgsql;
 
 
-CREATE OR REPLACE FUNCTION test.assert_equal(p_1 anyelement, p_2 anyelement) RETURNS VOID AS $$
--- Raises an exception if p_1 is not equal to p_2.
+CREATE OR REPLACE FUNCTION test.assert_equal(elem_1 anyelement, elem_2 anyelement) RETURNS VOID AS $$
+-- Raises an exception if elem_1 is not equal to elem_2.
 -- 
 -- The two arguments must be of the same type. If they are not,
 -- you will receive "ERROR:  invalid input syntax ..."
 BEGIN
-  IF ((p_1 IS NULL AND NOT (p_2 IS NULL)) OR
-      (p_2 IS NULL AND NOT (p_1 IS NULL)) OR
-      p_1 != p_2) THEN
-    RAISE EXCEPTION '% != %', p_1, p_2;
+  IF ((elem_1 IS NULL AND NOT (elem_2 IS NULL)) OR
+      (elem_2 IS NULL AND NOT (elem_1 IS NULL)) OR
+      elem_1 != elem_2) THEN
+    RAISE EXCEPTION '% != %', elem_1, elem_2;
   END IF;
 END;
 $$ LANGUAGE plpgsql;
 
 
-CREATE OR REPLACE FUNCTION test.assert_not_equal(p_1 anyelement, p_2 anyelement) RETURNS VOID AS $$
--- Raises an exception if p_1 is equal to p_2
+CREATE OR REPLACE FUNCTION test.assert_not_equal(elem_1 anyelement, elem_2 anyelement) RETURNS VOID AS $$
+-- Raises an exception if elem_1 is equal to elem_2
 -- 
 -- The two arguments must be of the same type. If they are not,
 -- you will receive "ERROR:  invalid input syntax ..."
 BEGIN
-  IF ((p_1 IS NULL AND p_2 IS NULL) OR p_1 = p_2) THEN
-    RAISE EXCEPTION '% = %', p_1, p_2;
+  IF ((elem_1 IS NULL AND elem_2 IS NULL) OR elem_1 = elem_2) THEN
+    RAISE EXCEPTION '% = %', elem_1, elem_2;
   END IF;
 END;
 $$ LANGUAGE plpgsql;
 
 
-CREATE OR REPLACE FUNCTION test.assert_less_than_or_equal(p_1 anyelement, p_2 anyelement) RETURNS VOID AS $$
--- Raises an exception if p_1 > p_2
+CREATE OR REPLACE FUNCTION test.assert_less_than_or_equal(elem_1 anyelement, elem_2 anyelement) RETURNS VOID AS $$
+-- Raises an exception if elem_1 > elem_2
 -- 
 -- The two arguments must be of the same type. If they are not,
 -- you will receive "ERROR:  invalid input syntax ..."
 BEGIN
-  IF NOT (p_1 <= p_2) THEN
-    RAISE EXCEPTION '% not less than %', p_1, p_2;
+  IF (elem_1 IS NULL or elem_2 IS NULL) THEN
+    RAISE EXCEPTION 'Assertion arguments may not be NULL.';
+  END IF;
+  IF NOT (elem_1 <= elem_2) THEN
+    RAISE EXCEPTION '% not <= %', elem_1, elem_2;
   END IF;
 END;
 $$ LANGUAGE plpgsql;
 
 
-CREATE OR REPLACE FUNCTION test.assert_raises(p_call text, p_errm text, p_state text) RETURNS VOID AS $$
--- Raises an exception if 'SELECT * FROM [p_call];' does not raise p_errm.
+CREATE OR REPLACE FUNCTION test.assert_raises(call text, errm text, state text) RETURNS VOID AS $$
+-- Raises an exception if 'SELECT * FROM [call];' does not raise errm.
 -- 
 -- Example:
 --
 --    PERFORM test.assert_raises('get_transaction_by_id("a")', 'Bad argument', NULL);
 --
--- If p_errm or p_state are NULL, that value will not be tested. This allows
+-- If errm or state are NULL, that value will not be tested. This allows
 -- you to test by message alone (since the 5-char SQLSTATE values are cryptic),
 -- or trap a range of errors by SQLSTATE without regard for the exact message.
 -- 
 -- If you don't know the message you want to trap, call this function with
--- p_errm = '' and p_state = ''. The resultant error will tell you the
+-- errm = '' and state = ''. The resultant error will tell you the
 -- SQLSTATE and SQLERRM that were raised.
 BEGIN
   BEGIN
-    EXECUTE 'SELECT * FROM '||p_call||';';
+    EXECUTE 'SELECT * FROM '||call||';';
   EXCEPTION
     WHEN OTHERS THEN
-      IF ((p_state IS NOT NULL AND SQLSTATE != p_state) OR
-          (p_errm IS NOT NULL AND SQLERRM != p_errm)) THEN
-        RAISE EXCEPTION 'Call: ''%'' raised ''(%) %'' instead of ''(%) %''.', p_call, SQLSTATE, SQLERRM, p_state, p_errm;
+      IF ((state IS NOT NULL AND SQLSTATE != state) OR
+          (errm IS NOT NULL AND SQLERRM != errm)) THEN
+        RAISE EXCEPTION 'Call: ''%'' raised ''(%) %'' instead of ''(%) %''.', call, SQLSTATE, SQLERRM, state, errm;
       END IF;
       RETURN;
   END;
-  RAISE EXCEPTION 'Call: ''%'' did not raise an error.', p_call;
+  RAISE EXCEPTION 'Call: ''%'' did not raise an error.', call;
 END;
 $$ LANGUAGE plpgsql;
 
-CREATE OR REPLACE FUNCTION test.assert_raises(p_call text, p_errm text) RETURNS VOID AS $$
--- Implicit p_column version of assert_values
+CREATE OR REPLACE FUNCTION test.assert_raises(call text, errm text) RETURNS VOID AS $$
+-- Implicit column version of assert_values
 BEGIN
-    PERFORM test.assert_raises(p_call, p_errm, NULL);
+  PERFORM test.assert_raises(call, errm, NULL);
 END;
 $$ LANGUAGE plpgsql;
 
-CREATE OR REPLACE FUNCTION test.assert_raises(p_call text) RETURNS VOID AS $$
--- Implicit p_errm, p_column version of assert_values
+CREATE OR REPLACE FUNCTION test.assert_raises(call text) RETURNS VOID AS $$
+-- Implicit errm, column version of assert_values
 BEGIN
-    PERFORM test.assert_raises(p_call, NULL, NULL);
+  PERFORM test.assert_raises(call, NULL, NULL);
 END;
 $$ LANGUAGE plpgsql;
 
 
 
-CREATE OR REPLACE FUNCTION test.record_asserter(p_varname1 text, p_varname2 text, p_colnames text) RETURNS SETOF text AS $$
+CREATE OR REPLACE FUNCTION test.record_asserter(varname1 text, varname2 text, colnames text) RETURNS SETOF text AS $$
 -- Returns EXECUTE-able SQL to assert equal fields for the two records.
 --
 -- Pass the variable *names* (not the records themselves) as the first
@@ -395,92 +402,92 @@ CREATE OR REPLACE FUNCTION test.record_asserter(p_varname1 text, p_varname2 text
 --
 -- Example:
 -- 
---    SELECT INTO v_old * FROM table WHERE id = 1;
---    SELECT INTO v_new * FROM table WHERE id = 2;
+--    SELECT INTO old * FROM table WHERE id = 1;
+--    SELECT INTO new * FROM table WHERE id = 2;
 --    FOR assertion in
---      SELECT * FROM test.record_asserter('v_old', 'v_new', 'first, last, city')
+--      SELECT * FROM test.record_asserter('old', 'new', 'first, last, city')
 --    LOOP
 --      PERFORM assertion;
 --    END LOOP;
 --
 DECLARE
-  i           integer:=1;
-  v_colname   text;
-  v_colnames  text[];
+  i             integer:=1;
+  colname       text;
+  colnames_arr  text[];
 BEGIN
-  --TODO: IF p_colnames IS NULL grab colnames from type
+  --TODO: IF colnames IS NULL grab colnames from type
   
-  v_colnames := string_to_array(p_colnames, ',');
-  FOR i IN array_lower(v_colnames, 1)..array_upper(v_colnames, 1)
+  colnames_arr := string_to_array(colnames, ',');
+  FOR i IN array_lower(colnames_arr, 1)..array_upper(colnames_arr, 1)
   LOOP
-    v_colname := quote_ident(trim(both ' ' from v_colnames[i]));
+    colname := quote_ident(trim(both ' ' from colnames_arr[i]));
     RETURN NEXT 'PERFORM test.assert_equal(' ||
-                 quote_ident(p_varname1) || '.' || v_colname || ', ' ||
-                 quote_ident(p_varname2) || '.' || v_colname || ');';
+                 quote_ident(varname1) || '.' || colname || ', ' ||
+                 quote_ident(varname2) || '.' || colname || ');';
   END LOOP;
   RETURN;
 END;
 $$ LANGUAGE plpgsql;
 
 
-CREATE OR REPLACE FUNCTION test.assert_values(p_source text, p_expected anyarray, p_column text) RETURNS VOID AS $$
--- Raises an exception if SELECT p_column FROM p_source != p_expected.
+CREATE OR REPLACE FUNCTION test.assert_values(source text, expected anyarray, colname text) RETURNS VOID AS $$
+-- Raises an exception if SELECT column FROM source != expected.
 --
--- p_column shoudl be the name of the column in p_source to compare.
--- If NULL, it will be taken from the first column of p_source's output.
+-- colname shoudl be the name of the column in source to compare.
+-- If NULL, it will be taken from the first column of source's output.
 --
--- p_source can be any table, view, or procedure that returns records.
--- p_expected MUST be an array of the same type as p_column.
--- Neither p_source nor p_expected need to be sorted.
+-- source can be any table, view, or procedure that returns records.
+-- expected MUST be an array of the same type as colname.
+-- Neither source nor expected need to be sorted.
 -- 
 -- Example:
 --    PERFORM test.assert_values('user_id',
---      'get_favorite_user_ids(' || v_user_id || ');',
+--      'get_favorite_user_ids(' || user_id || ');',
 --      '{24, 10074, 87321}');
 -- 
 DECLARE
-  i         integer;
-  v_record  record;
-  v_colname text;
+  i             integer;
+  record        record;
+  firstname     text;
 BEGIN
-  IF p_column IS NULL THEN
+  IF colname IS NULL THEN
     EXECUTE 'CREATE TEMPORARY TABLE _test_assert_values_base AS ' ||
-      'SELECT * FROM ' || p_source || ';';
-    SELECT INTO v_colname a.attname
+      'SELECT * FROM ' || source || ';';
+    SELECT INTO firstname a.attname
       FROM pg_class c LEFT JOIN pg_attribute a ON c.oid = a.attrelid
       WHERE c.relname = '_test_assert_values_base'
       -- "The number of the column. Ordinary columns are numbered from 1 up.
       -- System columns, such as oid, have (arbitrary) negative numbers"
       AND a.attnum >= 1
       ORDER BY a.attnum;
-    EXECUTE 'ALTER TABLE _test_assert_values_base RENAME ' || v_colname || ' TO result;';
+    EXECUTE 'ALTER TABLE _test_assert_values_base RENAME ' || firstname || ' TO result;';
   ELSE
     -- Dump the source into a temp table
     EXECUTE 'CREATE TEMPORARY TABLE _test_assert_values_base AS ' ||
-      'SELECT ' || p_column || ' AS result FROM ' || p_source || ';';
+      'SELECT ' || colname || ' AS result FROM ' || source || ';';
   END IF;
   
   -- Dump the provided array into a temp table
   -- Use EXECUTE for all statements involving this table so its query plan
   -- doesn't get cached and re-used (or subsequent calls will fail).
   EXECUTE 'CREATE TEMPORARY TABLE _test_assert_values_expected (LIKE _test_assert_values_base);';
-  FOR i IN array_lower(p_expected, 1)..array_upper(p_expected, 1)
+  FOR i IN array_lower(expected, 1)..array_upper(expected, 1)
   LOOP
-    EXECUTE 'INSERT INTO _test_assert_values_expected (result) VALUES (' || quote_literal(p_expected[i]) || ');';
+    EXECUTE 'INSERT INTO _test_assert_values_expected (result) VALUES (' || quote_literal(expected[i]) || ');';
   END LOOP;
   
   <<TRY>>
   BEGIN
-    FOR v_record IN EXECUTE '(SELECT * FROM _test_assert_values_base EXCEPT ALL
+    FOR record IN EXECUTE '(SELECT * FROM _test_assert_values_base EXCEPT ALL
                      SELECT * FROM _test_assert_values_expected)'
     LOOP
-      RAISE EXCEPTION 'result: % not in array: %', v_record.result, p_expected;
+      RAISE EXCEPTION 'result: % not in array: %', record.result, expected;
     END LOOP;
     
-    FOR v_record IN EXECUTE '(SELECT * FROM _test_assert_values_expected EXCEPT ALL
+    FOR record IN EXECUTE '(SELECT * FROM _test_assert_values_expected EXCEPT ALL
                      SELECT * FROM _test_assert_values_base)'
     LOOP
-      RAISE EXCEPTION 'element: % not in source: %', v_record.result, p_source;
+      RAISE EXCEPTION 'element: % not in source: %', record.result, source;
     END LOOP;
   EXCEPTION WHEN OTHERS THEN
     DROP TABLE _test_assert_values_base;
@@ -494,9 +501,9 @@ END;
 $$ LANGUAGE plpgsql;
 
 
-CREATE OR REPLACE FUNCTION test.assert_values(p_source text, p_expected anyarray) RETURNS VOID AS $$
--- Implicit p_column version of assert_values
+CREATE OR REPLACE FUNCTION test.assert_values(source text, expected anyarray) RETURNS VOID AS $$
+-- Implicit column version of assert_values
 BEGIN
-    PERFORM test.assert_values(p_source, p_expected, NULL);
+  PERFORM test.assert_values(source, expected, NULL);
 END;
 $$ LANGUAGE plpgsql;
