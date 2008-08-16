@@ -165,15 +165,15 @@ directly and you'll get the normal traceback, etc. from PL/pgSQL.
 Finally, you can run any test individually via:
 
     testdb=# SELECT * FROM test.run_test('test_inner_trans_set_create');
-     run_test
-    ----------
-     t
+                         name        |      module       | result | errcode |                             errmsg
+    ---------------------------------+-------------------+--------+---------+---------------------------------------------------------------
+     test_inner_trans_set_create     | test_transactions | [OK]   |         |
     (1 row)
 
-Using run_test, you get a T/F response instead of an exception (that running
-the test directly would raise). You also get an entry in test.results,
-so if you fix a single test, you can update its success without having
-to run a whole set of tests you didn't modify.
+By using run_test instead of running the test function directly, you get 
+an [OK] or [FAIL] response instead of an exception. You also get an entry 
+in test.results, so if you fix a single test, you can update its success 
+without having to run a whole set of tests you didn't modify.
 
 */
 
