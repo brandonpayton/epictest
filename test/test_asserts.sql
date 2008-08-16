@@ -1,3 +1,6 @@
+-- Tests for the various assert_* functions which Epic provides.
+-- To run, execute epic.sql, then this script, then test.run_module('test_asserts').
+
 SET search_path = test, public, pg_catalog;
 
 
@@ -93,6 +96,28 @@ END;
 $$ LANGUAGE plpgsql;
 
 
+CREATE OR REPLACE FUNCTION test.test_assert_void() RETURNS VOID AS $$
+-- Assert the correct operation of test.assert_void
+-- module: test_asserts
+DECLARE
+  retval    text;
+BEGIN
+  -- assert_void() MUST return VOID if the given call returns VOID.
+  SELECT INTO retval * FROM test.assert_void('pg_sleep(0.1)');
+  IF retval != '' THEN
+    RAISE EXCEPTION 'assert_void did not itself return void. Got ''%'' instead.', retval;
+  END IF;
+  
+  -- assert_void() MUST raise an exception if the given call does not return void.
+  PERFORM test.assert_raises('test.assert_void(''pg_namespace'')', 
+    'Call: ''pg_namespace'' did not return void. Got ''pg_toast'' instead.',
+    'P0001');
+  
+  RAISE EXCEPTION '[OK]';
+END;
+$$ LANGUAGE plpgsql;
+
+
 CREATE OR REPLACE FUNCTION test.test_assert_equal() RETURNS VOID AS $$
 -- Assert the correct operation of test.assert_equal
 -- module: test_asserts
@@ -100,25 +125,15 @@ DECLARE
   retval    text;
 BEGIN
   -- assert_equal() MUST return VOID if the given assertion holds.
-  SELECT INTO retval * FROM test.assert_equal(1, 1);
-  IF retval != '' THEN
-    RAISE EXCEPTION 'test.assert_equal() did not return void for (1, 1).';
-  END IF;
-  SELECT INTO retval * FROM test.assert_equal('abc'::text, 'abc');
-  IF retval != '' THEN
-    RAISE EXCEPTION 'test.assert_equal() did not return void for (''abc'', ''abc'').';
-  END IF;
+  PERFORM test.assert_void('test.assert_equal(1, 1)');
+  PERFORM test.assert_void('test.assert_equal(''abc''::text, ''abc'');');
+  
+  -- assert_equal() MUST return VOID if both args are null.
+  PERFORM test.assert_void('test.assert_equal(NULL::int, NULL);');
   
   -- assert_equal() MUST raise an exception if the given assertion does not hold.
   PERFORM test.assert_raises('test.assert_equal(1, 2)', '1 != 2', 'P0001');
-  
   PERFORM test.assert_raises('test.assert_equal(''abc''::text, ''xyz'')', 'abc != xyz', 'P0001');
-  
-  -- assert_equal() MUST return VOID if both args are null.
-  SELECT INTO retval * FROM test.assert_equal(NULL::int, NULL);
-  IF retval != '' THEN
-    RAISE EXCEPTION 'test.assert_equal() did not return void for (null, null).';
-  END IF;
   
   -- assert_equal() MUST raise an exception if only one arg is NULL.
   PERFORM test.assert_raises('test.assert_equal(8, NULL::int)', '8 != <NULL>', 'P0001');
@@ -141,28 +156,16 @@ DECLARE
   retval    text;
 BEGIN
   -- assert_not_equal() MUST return VOID if the given assertion does not hold.
-  SELECT INTO retval * FROM test.assert_not_equal(1, 2);
-  IF retval != '' THEN
-    RAISE EXCEPTION 'test.assert_not_equal() did not return void for (1, 2).';
-  END IF;
-  SELECT INTO retval * FROM test.assert_not_equal('abc'::text, 'xyz');
-  IF retval != '' THEN
-    RAISE EXCEPTION 'test.assert_not_equal() did not return void for (''abc'', ''xyz'').';
-  END IF;
+  PERFORM test.assert_void('test.assert_not_equal(1, 2);');
+  PERFORM test.assert_void('test.assert_not_equal(''abc''::text, ''xyz'');');
+  
+  -- assert_not_equal() MUST return VOID if only one arg is NULL.
+  PERFORM test.assert_void('test.assert_not_equal(8, NULL);');
+  PERFORM test.assert_void('test.assert_not_equal(NULL, 7);');
   
   -- assert_not_equal() MUST raise an exception if the given assertion holds.
   PERFORM test.assert_raises('test.assert_not_equal(1, 1)', '1 = 1', 'P0001');
   PERFORM test.assert_raises('test.assert_not_equal(''abc''::text, ''abc'')', 'abc = abc', 'P0001');
-  
-  -- assert_not_equal() MUST return VOID if only one arg is NULL.
-  SELECT INTO retval * FROM test.assert_not_equal(8, NULL);
-  IF retval != '' THEN
-    RAISE EXCEPTION 'test.assert_not_equal() did not return void for (8, null).';
-  END IF;
-  SELECT INTO retval * FROM test.assert_not_equal(NULL, 7);
-  IF retval != '' THEN
-    RAISE EXCEPTION 'test.assert_not_equal() did not return void for (null, 7).';
-  END IF;
   
   -- assert_not_equal() MUST raise an exception if both args are NULL.
   PERFORM test.assert_raises('test.assert_not_equal(NULL::int, NULL)', '<NULL> = <NULL>', 'P0001');
@@ -177,6 +180,38 @@ END;
 $$ LANGUAGE plpgsql;
 
 
+CREATE OR REPLACE FUNCTION test.test_assert_less_than() RETURNS VOID AS $$
+-- Assert the correct operation of test.assert_less_than
+-- module: test_asserts
+DECLARE
+  retval    text;
+BEGIN
+  -- assert_less_than() MUST return VOID if a < b.
+  PERFORM test.assert_void('test.assert_less_than(1, 2);');
+  PERFORM test.assert_void('test.assert_less_than(''abc''::text, ''xyz'');');
+  
+  -- assert_less_than() MUST raise an exception if a >= b.
+  PERFORM test.assert_raises('test.assert_less_than(2, 1)', '2 not < 1', 'P0001');
+  PERFORM test.assert_raises('test.assert_less_than(1, 1)', '1 not < 1', 'P0001');
+  PERFORM test.assert_raises('test.assert_less_than(''abc''::text, ''abc'')', 
+    'abc not < abc', 'P0001');
+  PERFORM test.assert_raises('test.assert_less_than(''xyz''::text, ''abc'')', 
+    'xyz not < abc', 'P0001');
+  
+  -- assert_less_than() MUST raise an exception if either arg is NULL.
+  PERFORM test.assert_raises('test.assert_less_than(NULL::int, NULL)', 
+    'Assertion arguments may not be NULL.', 'P0001');
+  
+  -- assert_less_than() will raise an undefined_function exception if the args have different types.
+  -- It would be nice to find a way around this (without writing M x N overloaded funcs).
+  PERFORM test.assert_raises('test.assert_less_than(8, ''abc''::text)', 
+    'function test.assert_less_than(integer, text) does not exist', '42883');
+  
+  RAISE EXCEPTION '[OK]';
+END;
+$$ LANGUAGE plpgsql;
+
+
 CREATE OR REPLACE FUNCTION test.test_assert_less_than_or_equal() RETURNS VOID AS $$
 -- Assert the correct operation of test.assert_less_than_or_equal
 -- module: test_asserts
@@ -184,22 +219,10 @@ DECLARE
   retval    text;
 BEGIN
   -- assert_less_than_or_equal() MUST return VOID if a <= b.
-  SELECT INTO retval * FROM test.assert_less_than_or_equal(1, 2);
-  IF retval != '' THEN
-    RAISE EXCEPTION 'test.assert_less_than_or_equal() did not return void for (1, 2).';
-  END IF;
-  SELECT INTO retval * FROM test.assert_less_than_or_equal(1, 1);
-  IF retval != '' THEN
-    RAISE EXCEPTION 'test.assert_less_than_or_equal() did not return void for (1, 1).';
-  END IF;
-  SELECT INTO retval * FROM test.assert_less_than_or_equal('abc'::text, 'xyz');
-  IF retval != '' THEN
-    RAISE EXCEPTION 'test.assert_less_than_or_equal() did not return void for (''abc'', ''xyz'').';
-  END IF;
-  SELECT INTO retval * FROM test.assert_less_than_or_equal('abc'::text, 'abc');
-  IF retval != '' THEN
-    RAISE EXCEPTION 'test.assert_less_than_or_equal() did not return void for (''abc'', ''abc'').';
-  END IF;
+  PERFORM test.assert_void('test.assert_less_than_or_equal(1, 2);');
+  PERFORM test.assert_void('test.assert_less_than_or_equal(1, 1);');
+  PERFORM test.assert_void('test.assert_less_than_or_equal(''abc''::text, ''xyz'');');
+  PERFORM test.assert_void('test.assert_less_than_or_equal(''abc''::text, ''abc'');');
   
   -- assert_less_than_or_equal() MUST raise an exception if a > b.
   PERFORM test.assert_raises('test.assert_less_than_or_equal(2, 1)', '2 not <= 1', 'P0001');
@@ -214,6 +237,69 @@ BEGIN
   -- It would be nice to find a way around this (without writing M x N overloaded funcs).
   PERFORM test.assert_raises('test.assert_less_than_or_equal(8, ''abc''::text)', 
     'function test.assert_less_than_or_equal(integer, text) does not exist', '42883');
+  
+  RAISE EXCEPTION '[OK]';
+END;
+$$ LANGUAGE plpgsql;
+
+
+CREATE OR REPLACE FUNCTION test.test_assert_greater_than() RETURNS VOID AS $$
+-- Assert the correct operation of test.assert_greater_than
+-- module: test_asserts
+DECLARE
+  retval    text;
+BEGIN
+  -- assert_greater_than() MUST return VOID if a > b.
+  PERFORM test.assert_void('test.assert_greater_than(2, 1);');
+  PERFORM test.assert_void('test.assert_greater_than(''xyz''::text, ''abc'');');
+  
+  -- assert_greater_than() MUST raise an exception if a <= b.
+  PERFORM test.assert_raises('test.assert_greater_than(1, 2)', '1 not > 2', 'P0001');
+  PERFORM test.assert_raises('test.assert_greater_than(1, 1)', '1 not > 1', 'P0001');
+  PERFORM test.assert_raises('test.assert_greater_than(''abc''::text, ''abc'')', 
+    'abc not > abc', 'P0001');
+  PERFORM test.assert_raises('test.assert_greater_than(''abc''::text, ''xyz'')', 
+    'abc not > xyz', 'P0001');
+  
+  -- assert_greater_than() MUST raise an exception if either arg is NULL.
+  PERFORM test.assert_raises('test.assert_greater_than(NULL::int, NULL)', 
+    'Assertion arguments may not be NULL.', 'P0001');
+  
+  -- assert_greater_than() will raise an undefined_function exception if the args have different types.
+  -- It would be nice to find a way around this (without writing M x N overloaded funcs).
+  PERFORM test.assert_raises('test.assert_greater_than(8, ''abc''::text)', 
+    'function test.assert_greater_than(integer, text) does not exist', '42883');
+  
+  RAISE EXCEPTION '[OK]';
+END;
+$$ LANGUAGE plpgsql;
+
+
+CREATE OR REPLACE FUNCTION test.test_assert_greater_than_or_equal() RETURNS VOID AS $$
+-- Assert the correct operation of test.assert_greater_than_or_equal
+-- module: test_asserts
+DECLARE
+  retval    text;
+BEGIN
+  -- assert_greater_than_or_equal() MUST return VOID if a >= b.
+  PERFORM test.assert_void('test.assert_greater_than_or_equal(2, 1);');
+  PERFORM test.assert_void('test.assert_greater_than_or_equal(1, 1);');
+  PERFORM test.assert_void('test.assert_greater_than_or_equal(''xyz''::text, ''abc'');');
+  PERFORM test.assert_void('test.assert_greater_than_or_equal(''abc''::text, ''abc'');');
+  
+  -- assert_greater_than_or_equal() MUST raise an exception if a < b.
+  PERFORM test.assert_raises('test.assert_greater_than_or_equal(1, 2)', '1 not >= 2', 'P0001');
+  PERFORM test.assert_raises('test.assert_greater_than_or_equal(''abc''::text, ''xyz'')', 
+    'abc not >= xyz', 'P0001');
+  
+  -- assert_greater_than_or_equal() MUST raise an exception if either arg is NULL.
+  PERFORM test.assert_raises('test.assert_greater_than_or_equal(NULL::int, NULL)', 
+    'Assertion arguments may not be NULL.', 'P0001');
+  
+  -- assert_greater_than_or_equal() will raise an undefined_function exception if the args have different types.
+  -- It would be nice to find a way around this (without writing M x N overloaded funcs).
+  PERFORM test.assert_raises('test.assert_greater_than_or_equal(8, ''abc''::text)', 
+    'function test.assert_greater_than_or_equal(integer, text) does not exist', '42883');
   
   RAISE EXCEPTION '[OK]';
 END;

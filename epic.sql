@@ -94,14 +94,19 @@ doesn't hold:
     * test.assert(assertion boolean, msg text): this is the 'catch-all'
         to assert anything that can be evaluated to a boolean. For example,
         PERFORM test.assert(substring(a from b), b||" not found in "||a);
-    * test.assert_equal(1 anyelement, 2 anyelement)
-    * test.assert_not_equal(1 anyelement, 2 anyelement)
-    * test.assert_less_than(1 anyelement, 2 anyelement)
+    * test.assert_void(call text)
+    * test.assert_equal(elem_1 anyelement, elem_2 anyelement)
+    * test.assert_not_equal(elem_1 anyelement, elem_2 anyelement)
+    * test.assert_greater_than(elem_1 anyelement, elem_2 anyelement)
+    * test.assert_greater_than_or_equal(elem_1 anyelement, elem_2 anyelement)
+    * test.assert_less_than(elem_1 anyelement, elem_2 anyelement)
+    * test.assert_less_than_or_equal(elem_1 anyelement, elem_2 anyelement)
     * test.assert_values(column text, source text, expected anyarray):
         Raises an exception if SELECT column FROM source != expected.
     
     * test.assert_raises(call text, errm text, state text): Raises an
-      exception if 'SELECT * FROM [call];' does not raise errm.
+        exception if 'SELECT * FROM [call];' does not raise errm
+        (if provided) or state (if provided).
 
 Some return dynamic SQL:
     
@@ -289,6 +294,19 @@ $$ LANGUAGE plpgsql;
 ------------------------------ Test helpers ------------------------------
 
 
+CREATE OR REPLACE FUNCTION test.assert_void(call text) RETURNS VOID AS $$
+-- Raises an exception if SELECT * FROM call != void.
+DECLARE
+  retval    text;
+BEGIN
+  EXECUTE ('SELECT * FROM ' || call || ';') INTO retval;
+  IF retval != '' THEN
+    RAISE EXCEPTION 'Call: ''%'' did not return void. Got ''%'' instead.', call, retval;
+  END IF;
+END;
+$$ LANGUAGE plpgsql;
+
+
 CREATE OR REPLACE FUNCTION test.assert(assertion boolean, msg text) RETURNS VOID AS $$
 -- Raises an exception (msg) if assertion is false.
 -- 
@@ -333,6 +351,22 @@ END;
 $$ LANGUAGE plpgsql;
 
 
+CREATE OR REPLACE FUNCTION test.assert_less_than(elem_1 anyelement, elem_2 anyelement) RETURNS VOID AS $$
+-- Raises an exception if elem_1 >= elem_2
+-- 
+-- The two arguments must be of the same type. If they are not,
+-- you will receive "ERROR:  invalid input syntax ..."
+BEGIN
+  IF (elem_1 IS NULL or elem_2 IS NULL) THEN
+    RAISE EXCEPTION 'Assertion arguments may not be NULL.';
+  END IF;
+  IF NOT (elem_1 < elem_2) THEN
+    RAISE EXCEPTION '% not < %', elem_1, elem_2;
+  END IF;
+END;
+$$ LANGUAGE plpgsql;
+
+
 CREATE OR REPLACE FUNCTION test.assert_less_than_or_equal(elem_1 anyelement, elem_2 anyelement) RETURNS VOID AS $$
 -- Raises an exception if elem_1 > elem_2
 -- 
@@ -344,6 +378,38 @@ BEGIN
   END IF;
   IF NOT (elem_1 <= elem_2) THEN
     RAISE EXCEPTION '% not <= %', elem_1, elem_2;
+  END IF;
+END;
+$$ LANGUAGE plpgsql;
+
+
+CREATE OR REPLACE FUNCTION test.assert_greater_than(elem_1 anyelement, elem_2 anyelement) RETURNS VOID AS $$
+-- Raises an exception if elem_1 <= elem_2
+-- 
+-- The two arguments must be of the same type. If they are not,
+-- you will receive "ERROR:  invalid input syntax ..."
+BEGIN
+  IF (elem_1 IS NULL or elem_2 IS NULL) THEN
+    RAISE EXCEPTION 'Assertion arguments may not be NULL.';
+  END IF;
+  IF NOT (elem_1 > elem_2) THEN
+    RAISE EXCEPTION '% not > %', elem_1, elem_2;
+  END IF;
+END;
+$$ LANGUAGE plpgsql;
+
+
+CREATE OR REPLACE FUNCTION test.assert_greater_than_or_equal(elem_1 anyelement, elem_2 anyelement) RETURNS VOID AS $$
+-- Raises an exception if elem_1 < elem_2
+-- 
+-- The two arguments must be of the same type. If they are not,
+-- you will receive "ERROR:  invalid input syntax ..."
+BEGIN
+  IF (elem_1 IS NULL or elem_2 IS NULL) THEN
+    RAISE EXCEPTION 'Assertion arguments may not be NULL.';
+  END IF;
+  IF NOT (elem_1 >= elem_2) THEN
+    RAISE EXCEPTION '% not >= %', elem_1, elem_2;
   END IF;
 END;
 $$ LANGUAGE plpgsql;
