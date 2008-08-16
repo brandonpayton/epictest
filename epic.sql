@@ -441,15 +441,16 @@ CREATE OR REPLACE FUNCTION test.assert_values(source text, expected anyarray, co
 -- Neither source nor expected need to be sorted.
 -- 
 -- Example:
---    PERFORM test.assert_values('user_id',
+--    PERFORM test.assert_values(
 --      'get_favorite_user_ids(' || user_id || ');',
---      '{24, 10074, 87321}');
+--      ARRAY[24, 10074, 87321], 'user_id');
 -- 
 DECLARE
   i             integer;
   record        record;
   firstname     text;
 BEGIN
+  -- Dump the source into a temp table
   IF colname IS NULL THEN
     EXECUTE 'CREATE TEMPORARY TABLE _test_assert_values_base AS ' ||
       'SELECT * FROM ' || source || ';';
@@ -462,7 +463,6 @@ BEGIN
       ORDER BY a.attnum;
     EXECUTE 'ALTER TABLE _test_assert_values_base RENAME ' || firstname || ' TO result;';
   ELSE
-    -- Dump the source into a temp table
     EXECUTE 'CREATE TEMPORARY TABLE _test_assert_values_base AS ' ||
       'SELECT ' || colname || ' AS result FROM ' || source || ';';
   END IF;
@@ -476,6 +476,7 @@ BEGIN
     EXECUTE 'INSERT INTO _test_assert_values_expected (result) VALUES (' || quote_literal(expected[i]) || ');';
   END LOOP;
   
+  -- Compare the two tables in setwise fashion.
   <<TRY>>
   BEGIN
     FOR record IN EXECUTE '(SELECT * FROM _test_assert_values_base EXCEPT ALL
