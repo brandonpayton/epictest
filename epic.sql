@@ -209,29 +209,6 @@ SELECT * FROM assert_test_schema();
 DROP FUNCTION assert_test_schema();
 
 
-CREATE OR REPLACE FUNCTION test.run_test(testname text) RETURNS boolean AS $$
--- Runs the named test, stores in test.results, and returns success.
-BEGIN
-  DELETE FROM test.results WHERE name = testname;
-  
-  BEGIN
-    EXECUTE 'SELECT * FROM test.' || testname || '();';
-  EXCEPTION WHEN OTHERS THEN
-    IF SQLERRM = '[OK]' THEN
-      INSERT INTO test.results (name, ok) VALUES (testname, TRUE);
-      RETURN TRUE;
-    ELSE
-      INSERT INTO test.results (name, ok, errcode, errmsg)
-           VALUES (testname, FALSE, SQLSTATE, SQLERRM);
-      RETURN FALSE;
-    END IF;
-  END;
-  
-  RAISE EXCEPTION 'Test % did not raise an exception as it should have. Exceptions must ALWAYS be raised in test procedures for rollback.', testname;
-END;
-$$ LANGUAGE plpgsql;
-
-
 CREATE OR REPLACE VIEW test.testnames AS
   SELECT pg_proc.proname AS name,
     substring(pg_proc.prosrc from E'--\\s+module[:]\\s+(\\S+)') AS module
@@ -241,24 +218,47 @@ CREATE OR REPLACE VIEW test.testnames AS
     AND pg_proc.proname LIKE E'test\_%';
 
 
+CREATE OR REPLACE FUNCTION test.run_test(testname text) RETURNS test.suite_results AS $$
+-- Runs the named test, stores in test.results, and returns success.
+DECLARE
+  modulename      text;
+  output_record   test.suite_results%ROWTYPE;
+BEGIN
+  SELECT module INTO modulename FROM test.testnames WHERE name = testname;
+  DELETE FROM test.results WHERE name = testname;
+  
+  BEGIN
+    EXECUTE 'SELECT * FROM test.' || testname || '();';
+  EXCEPTION WHEN OTHERS THEN
+    IF SQLERRM = '[OK]' THEN
+      INSERT INTO test.results (name, module, ok)
+        VALUES (testname, modulename, TRUE)
+        RETURNING name, module, CASE WHEN ok=true THEN '[OK]' ELSE '[FAIL]' END, errcode, errmsg
+        INTO output_record;
+      RETURN output_record;
+    ELSE
+      INSERT INTO test.results (name, module, ok, errcode, errmsg)
+        VALUES (testname, modulename, FALSE, SQLSTATE, SQLERRM)
+        RETURNING name, module, CASE WHEN ok=true THEN '[OK]' ELSE '[FAIL]' END, errcode, errmsg
+        INTO output_record;
+      RETURN output_record;
+    END IF;
+  END;
+  
+  RAISE EXCEPTION 'Test % did not raise an exception as it should have. Exceptions must ALWAYS be raised in test procedures for rollback.', testname;
+END;
+$$ LANGUAGE plpgsql;
+
+
 CREATE OR REPLACE FUNCTION test.run_module(modulename text) RETURNS SETOF test.suite_results AS $$
 -- Runs all tests in the given module, stores in test.results, and returns results.
 DECLARE
   testname        pg_proc.proname%TYPE;
   output_record   test.suite_results%ROWTYPE;
 BEGIN
-  FOR testname IN SELECT name, module FROM test.testnames WHERE module = modulename
+  FOR testname IN SELECT name FROM test.testnames WHERE module = modulename
   LOOP
-    PERFORM test.run_test(testname);
-    UPDATE test.results SET module = modulename WHERE name = testname;
-  END LOOP;
-  
-  FOR output_record in
-    SELECT name, module, CASE WHEN ok=true THEN '[OK]' ELSE '[FAIL]' END,
-           errcode, errmsg
-    FROM test.results
-    WHERE module = modulename
-  LOOP
+    SELECT INTO output_record * FROM test.run_test(testname);
     RETURN NEXT output_record;
   END LOOP;
 END;
@@ -276,16 +276,9 @@ BEGIN
   LOOP
     FOR testname IN SELECT name FROM test.testnames WHERE module = modulename
     LOOP
-      PERFORM test.run_test(testname);
-      UPDATE test.results SET module = modulename WHERE name = testname;
+      SELECT INTO output_record * FROM test.run_test(testname);
+      RETURN NEXT output_record;
     END LOOP;
-  END LOOP;
-  
-  FOR output_record in
-    SELECT name, module, CASE WHEN ok=true THEN '[OK]' ELSE '[FAIL]' END, errcode, errmsg
-    FROM test.results
-  LOOP
-    RETURN NEXT output_record;
   END LOOP;
 END;
 $$ LANGUAGE plpgsql;
