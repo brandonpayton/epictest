@@ -101,7 +101,7 @@ doesn't hold:
     * test.assert_greater_than_or_equal(elem_1 anyelement, elem_2 anyelement)
     * test.assert_less_than(elem_1 anyelement, elem_2 anyelement)
     * test.assert_less_than_or_equal(elem_1 anyelement, elem_2 anyelement)
-    * test.assert_values(column text, source text, expected anyarray):
+    * test.assert_values(source text, expected anyarray, colname text):
         Raises an exception if SELECT column FROM source != expected.
     
     * test.assert_raises(call text, errm text, state text): Raises an
@@ -313,7 +313,7 @@ BEGIN
     RAISE EXCEPTION '%', msg;
   END IF;
 END;
-$$ LANGUAGE plpgsql;
+$$ LANGUAGE plpgsql IMMUTABLE;
 
 
 CREATE OR REPLACE FUNCTION test.assert_equal(elem_1 anyelement, elem_2 anyelement) RETURNS VOID AS $$
@@ -328,7 +328,7 @@ BEGIN
     RAISE EXCEPTION '% != %', elem_1, elem_2;
   END IF;
 END;
-$$ LANGUAGE plpgsql;
+$$ LANGUAGE plpgsql IMMUTABLE;
 
 
 CREATE OR REPLACE FUNCTION test.assert_not_equal(elem_1 anyelement, elem_2 anyelement) RETURNS VOID AS $$
@@ -341,7 +341,7 @@ BEGIN
     RAISE EXCEPTION '% = %', elem_1, elem_2;
   END IF;
 END;
-$$ LANGUAGE plpgsql;
+$$ LANGUAGE plpgsql IMMUTABLE;
 
 
 CREATE OR REPLACE FUNCTION test.assert_less_than(elem_1 anyelement, elem_2 anyelement) RETURNS VOID AS $$
@@ -357,7 +357,7 @@ BEGIN
     RAISE EXCEPTION '% not < %', elem_1, elem_2;
   END IF;
 END;
-$$ LANGUAGE plpgsql;
+$$ LANGUAGE plpgsql IMMUTABLE;
 
 
 CREATE OR REPLACE FUNCTION test.assert_less_than_or_equal(elem_1 anyelement, elem_2 anyelement) RETURNS VOID AS $$
@@ -373,7 +373,7 @@ BEGIN
     RAISE EXCEPTION '% not <= %', elem_1, elem_2;
   END IF;
 END;
-$$ LANGUAGE plpgsql;
+$$ LANGUAGE plpgsql IMMUTABLE;
 
 
 CREATE OR REPLACE FUNCTION test.assert_greater_than(elem_1 anyelement, elem_2 anyelement) RETURNS VOID AS $$
@@ -389,7 +389,7 @@ BEGIN
     RAISE EXCEPTION '% not > %', elem_1, elem_2;
   END IF;
 END;
-$$ LANGUAGE plpgsql;
+$$ LANGUAGE plpgsql IMMUTABLE;
 
 
 CREATE OR REPLACE FUNCTION test.assert_greater_than_or_equal(elem_1 anyelement, elem_2 anyelement) RETURNS VOID AS $$
@@ -405,11 +405,11 @@ BEGIN
     RAISE EXCEPTION '% not >= %', elem_1, elem_2;
   END IF;
 END;
-$$ LANGUAGE plpgsql;
+$$ LANGUAGE plpgsql IMMUTABLE;
 
 
 CREATE OR REPLACE FUNCTION test.assert_raises(call text, errm text, state text) RETURNS VOID AS $$
--- Raises an exception if 'SELECT * FROM [call];' does not raise errm.
+-- Raises an exception if 'SELECT * FROM [call];' does not raise errm and/or state.
 -- 
 -- Example:
 --
@@ -438,14 +438,14 @@ END;
 $$ LANGUAGE plpgsql;
 
 CREATE OR REPLACE FUNCTION test.assert_raises(call text, errm text) RETURNS VOID AS $$
--- Implicit column version of assert_values
+-- Implicit state version of assert_raises
 BEGIN
   PERFORM test.assert_raises(call, errm, NULL);
 END;
 $$ LANGUAGE plpgsql;
 
 CREATE OR REPLACE FUNCTION test.assert_raises(call text) RETURNS VOID AS $$
--- Implicit errm, column version of assert_values
+-- Implicit errm, column version of assert_raises
 BEGIN
   PERFORM test.assert_raises(call, NULL, NULL);
 END;
@@ -486,16 +486,17 @@ BEGIN
   END LOOP;
   RETURN;
 END;
-$$ LANGUAGE plpgsql;
+$$ LANGUAGE plpgsql IMMUTABLE;
 
 
 CREATE OR REPLACE FUNCTION test.assert_values(source text, expected anyarray, colname text) RETURNS VOID AS $$
 -- Raises an exception if SELECT column FROM source != expected.
 --
--- colname shoudl be the name of the column in source to compare.
+-- colname should be the name of the column in source to compare.
 -- If NULL, it will be taken from the first column of source's output.
 --
 -- source can be any table, view, or procedure that returns records.
+-- 
 -- expected MUST be an array of the same type as colname.
 -- Neither source nor expected need to be sorted.
 -- 
@@ -559,7 +560,6 @@ BEGIN
   EXECUTE 'DROP TABLE _test_assert_values_expected';
 END;
 $$ LANGUAGE plpgsql;
-
 
 CREATE OR REPLACE FUNCTION test.assert_values(source text, expected anyarray) RETURNS VOID AS $$
 -- Implicit column version of assert_values
