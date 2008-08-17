@@ -25,13 +25,6 @@ BEGIN
     RAISE EXCEPTION 'assert_test_schema did not create a test.results table.';
   END IF;
   
-  -- assert_test_schema MUST create a 'test.suite_results' type
-  SELECT typname INTO objname FROM pg_type
-    WHERE typnamespace = nsoid AND typname = 'suite_results';
-  IF objname IS NULL THEN
-    RAISE EXCEPTION 'assert_test_schema did not create a test.suite_results type.';
-  END IF;
-  
   RAISE EXCEPTION '[OK]';
 END;
 $$ LANGUAGE plpgsql;

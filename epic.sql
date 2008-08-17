@@ -189,14 +189,7 @@ BEGIN
   
   BEGIN
     CREATE TABLE test.results (name text PRIMARY KEY, module text,
-                               ok boolean, errcode text, errmsg text);
-  EXCEPTION WHEN duplicate_table THEN
-    NULL;
-  END;
-  
-  BEGIN
-    CREATE TYPE test.suite_results AS (name text, module text, result text,
-                                       errcode text, errmsg text);
+                               result text, errcode text, errmsg text);
   EXCEPTION WHEN duplicate_table THEN
     NULL;
   END;
@@ -218,11 +211,11 @@ CREATE OR REPLACE VIEW test.testnames AS
     AND pg_proc.proname LIKE E'test\_%';
 
 
-CREATE OR REPLACE FUNCTION test.run_test(testname text) RETURNS test.suite_results AS $$
+CREATE OR REPLACE FUNCTION test.run_test(testname text) RETURNS test.results AS $$
 -- Runs the named test, stores in test.results, and returns success.
 DECLARE
   modulename      text;
-  output_record   test.suite_results%ROWTYPE;
+  output_record   test.results%ROWTYPE;
 BEGIN
   SELECT module INTO modulename FROM test.testnames WHERE name = testname;
   DELETE FROM test.results WHERE name = testname;
@@ -230,17 +223,15 @@ BEGIN
   BEGIN
     EXECUTE 'SELECT * FROM test.' || testname || '();';
   EXCEPTION WHEN OTHERS THEN
-    IF SQLERRM = '[OK]' THEN
-      INSERT INTO test.results (name, module, ok)
-        VALUES (testname, modulename, TRUE)
-        RETURNING name, module, CASE WHEN ok=true THEN '[OK]' ELSE '[FAIL]' END, errcode, errmsg
-        INTO output_record;
+    IF SQLERRM LIKE '[%]' THEN
+      INSERT INTO test.results (name, module, result)
+        VALUES (testname, modulename, SQLERRM)
+        RETURNING * INTO output_record;
       RETURN output_record;
     ELSE
-      INSERT INTO test.results (name, module, ok, errcode, errmsg)
-        VALUES (testname, modulename, FALSE, SQLSTATE, SQLERRM)
-        RETURNING name, module, CASE WHEN ok=true THEN '[OK]' ELSE '[FAIL]' END, errcode, errmsg
-        INTO output_record;
+      INSERT INTO test.results (name, module, result, errcode, errmsg)
+        VALUES (testname, modulename, '[FAIL]', SQLSTATE, SQLERRM)
+        RETURNING * INTO output_record;
       RETURN output_record;
     END IF;
   END;
@@ -250,11 +241,11 @@ END;
 $$ LANGUAGE plpgsql;
 
 
-CREATE OR REPLACE FUNCTION test.run_module(modulename text) RETURNS SETOF test.suite_results AS $$
+CREATE OR REPLACE FUNCTION test.run_module(modulename text) RETURNS SETOF test.results AS $$
 -- Runs all tests in the given module, stores in test.results, and returns results.
 DECLARE
   testname        pg_proc.proname%TYPE;
-  output_record   test.suite_results%ROWTYPE;
+  output_record   test.results%ROWTYPE;
 BEGIN
   FOR testname IN SELECT name FROM test.testnames WHERE module = modulename
   LOOP
@@ -265,12 +256,12 @@ END;
 $$ LANGUAGE plpgsql;
 
 
-CREATE OR REPLACE FUNCTION test.run_all() RETURNS SETOF test.suite_results AS $$
+CREATE OR REPLACE FUNCTION test.run_all() RETURNS SETOF test.results AS $$
 -- Runs all known test functions, stores in test.results, and returns results.
 DECLARE
   testname pg_proc.proname%TYPE;
   modulename text;
-  output_record test.suite_results%ROWTYPE;
+  output_record test.results%ROWTYPE;
 BEGIN
   FOR modulename in SELECT DISTINCT module FROM test.testnames ORDER BY module ASC
   LOOP
