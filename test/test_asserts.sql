@@ -299,65 +299,75 @@ END;
 $$ LANGUAGE plpgsql;
 
 
-CREATE OR REPLACE FUNCTION test.test_record_asserter() RETURNS VOID AS $$
--- Assert the correct operation of test.record_asserter
--- module: test_asserts
-DECLARE
-  assertion    text;
-  assertions   text[];
-  old          record;
-  new          record;
-BEGIN
-  FOR assertion in
-    SELECT * FROM test.record_asserter('old', 'new', 'first, last, city')
-  LOOP
-    assertions := assertions || assertion;
-  END LOOP;
-  
-  IF assertions <> ARRAY['PERFORM test.assert_equal("old"."first", "new"."first");',
-                         'PERFORM test.assert_equal("old"."last", "new"."last");',
-                         'PERFORM test.assert_equal("old".city, "new".city);'] THEN
-    RAISE EXCEPTION 'record_asserter did not return the proper SQL. %', assertions;
-  END IF;
-  
-  -- Now just for fun, execute the returned SQL.
-  CREATE TEMPORARY TABLE _test_user (first text, last text, city text);
-  INSERT INTO _test_user VALUES ('Michael', 'Stonebraker', 'New York');
-  SELECT INTO old * FROM _test_user WHERE city = 'New York';
-  SELECT INTO new * FROM _test_user WHERE city = 'New York';
-  FOR i IN array_lower(assertions, 1)..array_upper(assertions, 1)
-  LOOP
-    PERFORM assertions[i];
-  END LOOP;
-  
-  RAISE EXCEPTION '[OK]';
-END;
-$$ LANGUAGE plpgsql;
-
-
-CREATE OR REPLACE FUNCTION test.test_assert_values() RETURNS VOID AS $$
--- Assert the correct operation of test.assert_values
+CREATE OR REPLACE FUNCTION test.test_assert_rows() RETURNS VOID AS $$
+-- Assert the correct operation of test.assert_rows
 -- module: test_asserts
 DECLARE
   failed     bool;
 BEGIN
-  PERFORM test.assert_values(
-    'generate_series(1, 10);',
-    ARRAY[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+  -- Tautology
+  PERFORM test.assert_rows(
+    'SELECT oid, proname FROM pg_proc',
+    'SELECT oid, proname FROM pg_proc');
+  -- Almost a tautology ;)
+  -- Note the trailing semicolon in the first arg.
+  PERFORM test.assert_rows(
+    'SELECT tablename FROM pg_tables;',
+    'SELECT relname FROM pg_class where relkind = ''r''');
   
+  -- ...and an assertion that should fail
   failed := false;
   BEGIN
-    PERFORM test.assert_values('generate_series(1, 10);', ARRAY[1, 2]);
+    PERFORM test.assert_rows(
+      'SELECT * FROM generate_series(1, 10)', 
+      'SELECT * FROM generate_series(1, 5)');
+  EXCEPTION WHEN OTHERS THEN
+    failed := true;
+    IF SQLERRM = 'Record: (6) from: SELECT * FROM generate_series(1, 10) not found in: SELECT * FROM generate_series(1, 5)' THEN
+      NULL;
+    ELSE
+      RAISE EXCEPTION 'test.assert_rows() did not raise the correct error. Raised: %', SQLERRM;
+    END IF;
+  END;
+  IF NOT failed THEN
+    PERFORM test.fail('test.assert_rows() did not fail.');
+  END IF;
+  
+  PERFORM test.pass();
+END;
+$$ LANGUAGE plpgsql;
+
+
+CREATE OR REPLACE FUNCTION test.test_assert_column() RETURNS VOID AS $$
+-- Assert the correct operation of test.assert_column
+-- module: test_asserts
+DECLARE
+  failed     bool;
+BEGIN
+  -- Test an assertion that should pass
+  PERFORM test.assert_column(
+    'generate_series(1, 10);',
+    ARRAY[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+  -- explicit colname version
+  PERFORM test.assert_column(
+    'generate_series(1, 10);',
+    ARRAY[1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+    'generate_series');
+  
+  -- ...and an assertion that should fail
+  failed := false;
+  BEGIN
+    PERFORM test.assert_column('generate_series(1, 10);', ARRAY[1, 2]);
   EXCEPTION WHEN OTHERS THEN
     failed := true;
     IF SQLERRM = 'result: 3 not in array: {1,2}' THEN
       NULL;
     ELSE
-      RAISE EXCEPTION 'test.assert_values() did not raise the correct error. Raised: %', SQLERRM;
+      RAISE EXCEPTION 'test.assert_column() did not raise the correct error. Raised: %', SQLERRM;
     END IF;
   END;
   IF NOT failed THEN
-    RAISE EXCEPTION 'test.assert_values() did not fail.';
+    PERFORM test.fail('test.assert_column() did not fail.');
   END IF;
   
   RAISE EXCEPTION '[OK]';

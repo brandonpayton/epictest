@@ -47,7 +47,9 @@ Write tests as PL/pgSQL procedures. There are only a couple of things to do
 to ensure they work well with the framework:
     
     1. ALWAYS RAISE EXCEPTION at the end of test procs to rollback! Even if
-        the test passes, RAISE EXCEPTION '[OK]'.
+        the test passes, RAISE EXCEPTION '[OK]'. You may instead PERFORM the
+        Epic functions test.pass(), test.fail(errmsg), test.todo(msg) and
+        test.skip(msg).
     2. Put your test in the "test" schema.
     3. Start the name of your test with "test_".
         I like "test_[schema]_[target proc]" but do what you like.
@@ -79,13 +81,13 @@ BEGIN
   END MAIN;
 
   -- ALWAYS RAISE EXCEPTION at the end of test procs to rollback!
-  RAISE EXCEPTION '[OK]';
+  PERFORM test.pass();
 END;
 $$ LANGUAGE plpgsql;
 
 
-Test helper functions
----------------------
+Assertion functions
+-------------------
 
 Epic.sql includes some functions to make tests easier to write (and shorter).
 The following functions all return void, raising an exception if the assertion
@@ -101,18 +103,14 @@ doesn't hold:
     * test.assert_greater_than_or_equal(elem_1 anyelement, elem_2 anyelement)
     * test.assert_less_than(elem_1 anyelement, elem_2 anyelement)
     * test.assert_less_than_or_equal(elem_1 anyelement, elem_2 anyelement)
-    * test.assert_values(source text, expected anyarray, colname text):
-        Raises an exception if SELECT column FROM source != expected.
+    * test.assert_rows(row_1 text, row_2 text):
+        Raises an exception if the SELECT statement row_1 != the SELECT statement row_2.
+    * test.assert_column(call text, expected anyarray[, colname text]):
+        Raises an exception if SELECT colname FROM call != expected.
     
-    * test.assert_raises(call text, errm text, state text): Raises an
-        exception if 'SELECT * FROM [call];' does not raise errm
+    * test.assert_raises(call text, errm text, state text): 
+        Raises an exception if 'SELECT * FROM [call];' does not raise errm
         (if provided) or state (if provided).
-
-Some return dynamic SQL:
-    
-    * test.record_asserter(varname1 text, varname2 text, colnames text):
-        Returns EXECUTE-able SQL to assert equal fields for the two records.
-        LOOP over its results and PERFORM each one.
 
 
 Running tests
@@ -216,6 +214,7 @@ CREATE OR REPLACE FUNCTION test.run_test(testname text) RETURNS test.results AS 
 DECLARE
   modulename      text;
   output_record   test.results%ROWTYPE;
+  splitpoint      int;
 BEGIN
   SELECT module INTO modulename FROM test.testnames WHERE name = testname;
   DELETE FROM test.results WHERE name = testname;
@@ -223,9 +222,12 @@ BEGIN
   BEGIN
     EXECUTE 'SELECT * FROM test.' || testname || '();';
   EXCEPTION WHEN OTHERS THEN
-    IF SQLERRM LIKE '[%]' THEN
-      INSERT INTO test.results (name, module, result)
-        VALUES (testname, modulename, SQLERRM)
+    IF SQLSTATE = 'P0001' AND SQLERRM LIKE '[%]%' THEN
+      splitpoint := position(']' in SQLERRM);
+      INSERT INTO test.results (name, module, result, errcode, errmsg)
+        VALUES (testname, modulename, substr(SQLERRM, 1, splitpoint),
+                CASE WHEN SQLERRM LIKE '[FAIL]%' THEN SQLSTATE ELSE '' END,
+                btrim(substr(SQLERRM, splitpoint + 1)))
         RETURNING * INTO output_record;
       RETURN output_record;
     ELSE
@@ -271,6 +273,76 @@ BEGIN
       RETURN NEXT output_record;
     END LOOP;
   END LOOP;
+END;
+$$ LANGUAGE plpgsql;
+
+
+CREATE OR REPLACE FUNCTION test.finish(result text, errmsg text) RETURNS VOID AS $$
+-- Use this to finish a test. Raises the given result as an exception (for rollback).
+DECLARE
+  msg        text;
+BEGIN
+  msg := '[' || result || ']';
+  IF errmsg IS NOT NULL THEN
+    msg := msg || ' ' || errmsg;
+  END IF;
+  RAISE EXCEPTION '%', msg;
+END;
+$$ LANGUAGE plpgsql;
+
+
+CREATE OR REPLACE FUNCTION test.pass(msg text) RETURNS VOID AS $$
+-- Use this to finish a successful test. Raises exception '[OK] msg'.
+BEGIN
+  PERFORM test.finish('OK', msg);
+END;
+$$ LANGUAGE plpgsql;
+CREATE OR REPLACE FUNCTION test.pass() RETURNS VOID AS $$
+-- Use this to finish a successful test. Raises exception '[OK]'.
+BEGIN
+  PERFORM test.finish('OK', NULL);
+END;
+$$ LANGUAGE plpgsql;
+
+
+CREATE OR REPLACE FUNCTION test.fail(msg text) RETURNS VOID AS $$
+-- Use this to finish a failed test. Raises exception '[FAIL] msg'.
+BEGIN
+  PERFORM test.finish('FAIL', msg);
+END;
+$$ LANGUAGE plpgsql;
+CREATE OR REPLACE FUNCTION test.fail() RETURNS VOID AS $$
+-- Use this to finish a failed test. Raises exception '[FAIL]'.
+BEGIN
+  PERFORM test.finish('FAIL', NULL);
+END;
+$$ LANGUAGE plpgsql;
+
+
+CREATE OR REPLACE FUNCTION test.todo(msg text) RETURNS VOID AS $$
+-- Use this to abort a test as 'todo'. Raises exception '[TODO] msg'.
+BEGIN
+  PERFORM test.finish('TODO', msg);
+END;
+$$ LANGUAGE plpgsql;
+CREATE OR REPLACE FUNCTION test.todo() RETURNS VOID AS $$
+-- Use this to abort a test as 'todo'. Raises exception '[TODO]'.
+BEGIN
+  PERFORM test.finish('TODO', NULL);
+END;
+$$ LANGUAGE plpgsql;
+
+
+CREATE OR REPLACE FUNCTION test.skip(msg text) RETURNS VOID AS $$
+-- Use this to skip a test. Raises exception '[SKIP] msg'.
+BEGIN
+  PERFORM test.finish('SKIP', msg);
+END;
+$$ LANGUAGE plpgsql;
+CREATE OR REPLACE FUNCTION test.skip() RETURNS VOID AS $$
+-- Use this to skip a test. Raises exception '[SKIP]'.
+BEGIN
+  PERFORM test.finish('SKIP', NULL);
 END;
 $$ LANGUAGE plpgsql;
 
@@ -443,56 +515,44 @@ END;
 $$ LANGUAGE plpgsql;
 
 
-
-CREATE OR REPLACE FUNCTION test.record_asserter(varname1 text, varname2 text, colnames text) RETURNS SETOF text AS $$
--- Returns EXECUTE-able SQL to assert equal fields for the two records.
+CREATE OR REPLACE FUNCTION test.assert_rows(source text, expected text) RETURNS VOID AS $$
+-- Asserts that two sets of rows have equal values.
 --
--- Pass the variable *names* (not the records themselves) as the first
--- two arguments, and a comma-delimited list of column names to compare.
+-- Both arguments should be SELECT statements yielding a single row or a set of rows.
+-- Neither source nor expected need to be sorted. Either may include a trailing semicolon.
 --
 -- Example:
 -- 
---    SELECT INTO old * FROM table WHERE id = 1;
---    SELECT INTO new * FROM table WHERE id = 2;
---    FOR assertion in
---      SELECT * FROM test.record_asserter('old', 'new', 'first, last, city')
---    LOOP
---      PERFORM assertion;
---    END LOOP;
---
+--    PERFORM test.assert_row('SELECT first, last, city FROM table1',
+--                            'SELECT ROW(''Davy'', ''Crockett'', NULL)');
 DECLARE
-  i             integer:=1;
-  colname       text;
-  colnames_arr  text[];
+  rec     record;
 BEGIN
-  --TODO: IF colnames IS NULL grab colnames from type
-  
-  colnames_arr := string_to_array(colnames, ',');
-  FOR i IN array_lower(colnames_arr, 1)..array_upper(colnames_arr, 1)
+  FOR rec in EXECUTE rtrim(source, ';') || ' EXCEPT ' || rtrim(expected, ';')
   LOOP
-    colname := quote_ident(trim(both ' ' from colnames_arr[i]));
-    RETURN NEXT 'PERFORM test.assert_equal(' ||
-                 quote_ident(varname1) || '.' || colname || ', ' ||
-                 quote_ident(varname2) || '.' || colname || ');';
+    RAISE EXCEPTION 'Record: % from: % not found in: %', rec, source, expected;
   END LOOP;
-  RETURN;
+  
+  FOR rec in EXECUTE rtrim(expected, ';') || ' EXCEPT ' || rtrim(source, ';')
+  LOOP
+    RAISE EXCEPTION 'Record: % from: % not found in: %', rec, expected, source;
+  END LOOP;
 END;
 $$ LANGUAGE plpgsql IMMUTABLE;
 
 
-CREATE OR REPLACE FUNCTION test.assert_values(source text, expected anyarray, colname text) RETURNS VOID AS $$
--- Raises an exception if SELECT column FROM source != expected.
+CREATE OR REPLACE FUNCTION test.assert_column(call text, expected anyarray, colname text) RETURNS VOID AS $$
+-- Raises an exception if SELECT colname FROM call != expected.
 --
--- colname should be the name of the column in source to compare.
--- If NULL, it will be taken from the first column of source's output.
+-- If colname is NULL or omitted, the first column of call's output will be used.
 --
--- source can be any table, view, or procedure that returns records.
+-- 'call' can be any table, view, or procedure that returns records.
 -- 
--- expected MUST be an array of the same type as colname.
--- Neither source nor expected need to be sorted.
+-- 'expected' MUST be an array of the same type as colname.
+-- Neither call nor expected need to be sorted.
 -- 
 -- Example:
---    PERFORM test.assert_values(
+--    PERFORM test.assert_column(
 --      'get_favorite_user_ids(' || user_id || ');',
 --      ARRAY[24, 10074, 87321], 'user_id');
 -- 
@@ -501,10 +561,10 @@ DECLARE
   record        record;
   firstname     text;
 BEGIN
-  -- Dump the source into a temp table
+  -- Dump the call output into a temp table
   IF colname IS NULL THEN
     EXECUTE 'CREATE TEMPORARY TABLE _test_assert_values_base AS ' ||
-      'SELECT * FROM ' || source || ';';
+      'SELECT * FROM ' || call || ';';
     SELECT INTO firstname a.attname
       FROM pg_class c LEFT JOIN pg_attribute a ON c.oid = a.attrelid
       WHERE c.relname = '_test_assert_values_base'
@@ -512,10 +572,10 @@ BEGIN
       -- System columns, such as oid, have (arbitrary) negative numbers"
       AND a.attnum >= 1
       ORDER BY a.attnum;
-    EXECUTE 'ALTER TABLE _test_assert_values_base RENAME ' || firstname || ' TO result;';
+    EXECUTE 'ALTER TABLE _test_assert_values_base RENAME ' || firstname || ' TO _assert_values_result;';
   ELSE
     EXECUTE 'CREATE TEMPORARY TABLE _test_assert_values_base AS ' ||
-      'SELECT ' || colname || ' AS result FROM ' || source || ';';
+      'SELECT ' || colname || ' AS _assert_values_result FROM ' || call || ';';
   END IF;
   
   -- Dump the provided array into a temp table
@@ -524,22 +584,27 @@ BEGIN
   EXECUTE 'CREATE TEMPORARY TABLE _test_assert_values_expected (LIKE _test_assert_values_base);';
   FOR i IN array_lower(expected, 1)..array_upper(expected, 1)
   LOOP
-    EXECUTE 'INSERT INTO _test_assert_values_expected (result) VALUES (' || quote_literal(expected[i]) || ');';
+    IF expected[i] IS NULL THEN
+      EXECUTE 'INSERT INTO _test_assert_values_expected (_assert_values_result) VALUES (NULL);';
+    ELSE
+      EXECUTE 'INSERT INTO _test_assert_values_expected (_assert_values_result) VALUES ('
+              || quote_literal(expected[i]) || ');';
+    END IF;
   END LOOP;
   
   -- Compare the two tables in setwise fashion.
   <<TRY>>
   BEGIN
     FOR record IN EXECUTE '(SELECT * FROM _test_assert_values_base EXCEPT ALL
-                     SELECT * FROM _test_assert_values_expected)'
+                            SELECT * FROM _test_assert_values_expected)'
     LOOP
-      RAISE EXCEPTION 'result: % not in array: %', record.result, expected;
+      RAISE EXCEPTION 'result: % not in array: %', record._assert_values_result, expected;
     END LOOP;
     
     FOR record IN EXECUTE '(SELECT * FROM _test_assert_values_expected EXCEPT ALL
-                     SELECT * FROM _test_assert_values_base)'
+                            SELECT * FROM _test_assert_values_base)'
     LOOP
-      RAISE EXCEPTION 'element: % not in source: %', record.result, source;
+      RAISE EXCEPTION 'element: % not in call: %', record._assert_values_result, call;
     END LOOP;
   EXCEPTION WHEN OTHERS THEN
     DROP TABLE _test_assert_values_base;
@@ -552,9 +617,9 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
-CREATE OR REPLACE FUNCTION test.assert_values(source text, expected anyarray) RETURNS VOID AS $$
--- Implicit column version of assert_values
+CREATE OR REPLACE FUNCTION test.assert_column(call text, expected anyarray) RETURNS VOID AS $$
+-- Implicit column version of assert_column
 BEGIN
-  PERFORM test.assert_values(source, expected, NULL);
+  PERFORM test.assert_column(call, expected, NULL);
 END;
 $$ LANGUAGE plpgsql;
