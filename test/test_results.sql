@@ -19,7 +19,7 @@ BEGIN
   END;
   PERFORM test.fail('test.pass() did not raise the ''[OK]'' exception.');
 END;
-$$ LANGUAGE plpgsql;
+$$ LANGUAGE plpgsql IMMUTABLE;
 
 
 CREATE OR REPLACE FUNCTION test.test_fail() RETURNS VOID AS $$

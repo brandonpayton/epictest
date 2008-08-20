@@ -48,7 +48,7 @@ to ensure they work well with the framework:
     
     1. ALWAYS RAISE EXCEPTION at the end of test procs to rollback! Even if
         the test passes, RAISE EXCEPTION '[OK]'. You may instead PERFORM the
-        Epic functions test.pass(), test.fail(errmsg), test.todo(msg) and
+        Epic functions test.pass(), test.fail(msg), test.todo(msg) and
         test.skip(msg).
     2. Put your test in the "test" schema.
     3. Start the name of your test with "test_".
@@ -103,6 +103,7 @@ doesn't hold:
     * test.assert_greater_than_or_equal(elem_1 anyelement, elem_2 anyelement)
     * test.assert_less_than(elem_1 anyelement, elem_2 anyelement)
     * test.assert_less_than_or_equal(elem_1 anyelement, elem_2 anyelement)
+    
     * test.assert_rows(row_1 text, row_2 text):
         Raises an exception if the SELECT statement row_1 != the SELECT statement row_2.
     * test.assert_column(call text, expected anyarray[, colname text]):
@@ -209,6 +210,9 @@ CREATE OR REPLACE VIEW test.testnames AS
     AND pg_proc.proname LIKE E'test\_%';
 
 
+------------------------------ Runners ------------------------------
+
+
 CREATE OR REPLACE FUNCTION test.run_test(testname text) RETURNS test.results AS $$
 -- Runs the named test, stores in test.results, and returns success.
 DECLARE
@@ -277,18 +281,21 @@ END;
 $$ LANGUAGE plpgsql;
 
 
-CREATE OR REPLACE FUNCTION test.finish(result text, errmsg text) RETURNS VOID AS $$
+------------------------------ Pass/fail ------------------------------
+
+
+CREATE OR REPLACE FUNCTION test.finish(result text, msg text) RETURNS VOID AS $$
 -- Use this to finish a test. Raises the given result as an exception (for rollback).
 DECLARE
-  msg        text;
+  fullmsg        text;
 BEGIN
-  msg := '[' || result || ']';
-  IF errmsg IS NOT NULL THEN
-    msg := msg || ' ' || errmsg;
+  fullmsg := '[' || result || ']';
+  IF msg IS NOT NULL THEN
+    fullmsg := fullmsg || ' ' || msg;
   END IF;
-  RAISE EXCEPTION '%', msg;
+  RAISE EXCEPTION '%', fullmsg;
 END;
-$$ LANGUAGE plpgsql;
+$$ LANGUAGE plpgsql IMMUTABLE;
 
 
 CREATE OR REPLACE FUNCTION test.pass(msg text) RETURNS VOID AS $$
@@ -296,13 +303,13 @@ CREATE OR REPLACE FUNCTION test.pass(msg text) RETURNS VOID AS $$
 BEGIN
   PERFORM test.finish('OK', msg);
 END;
-$$ LANGUAGE plpgsql;
+$$ LANGUAGE plpgsql IMMUTABLE;
 CREATE OR REPLACE FUNCTION test.pass() RETURNS VOID AS $$
 -- Use this to finish a successful test. Raises exception '[OK]'.
 BEGIN
   PERFORM test.finish('OK', NULL);
 END;
-$$ LANGUAGE plpgsql;
+$$ LANGUAGE plpgsql IMMUTABLE;
 
 
 CREATE OR REPLACE FUNCTION test.fail(msg text) RETURNS VOID AS $$
@@ -310,13 +317,13 @@ CREATE OR REPLACE FUNCTION test.fail(msg text) RETURNS VOID AS $$
 BEGIN
   PERFORM test.finish('FAIL', msg);
 END;
-$$ LANGUAGE plpgsql;
+$$ LANGUAGE plpgsql IMMUTABLE;
 CREATE OR REPLACE FUNCTION test.fail() RETURNS VOID AS $$
 -- Use this to finish a failed test. Raises exception '[FAIL]'.
 BEGIN
   PERFORM test.finish('FAIL', NULL);
 END;
-$$ LANGUAGE plpgsql;
+$$ LANGUAGE plpgsql IMMUTABLE;
 
 
 CREATE OR REPLACE FUNCTION test.todo(msg text) RETURNS VOID AS $$
@@ -324,13 +331,13 @@ CREATE OR REPLACE FUNCTION test.todo(msg text) RETURNS VOID AS $$
 BEGIN
   PERFORM test.finish('TODO', msg);
 END;
-$$ LANGUAGE plpgsql;
+$$ LANGUAGE plpgsql IMMUTABLE;
 CREATE OR REPLACE FUNCTION test.todo() RETURNS VOID AS $$
 -- Use this to abort a test as 'todo'. Raises exception '[TODO]'.
 BEGIN
   PERFORM test.finish('TODO', NULL);
 END;
-$$ LANGUAGE plpgsql;
+$$ LANGUAGE plpgsql IMMUTABLE;
 
 
 CREATE OR REPLACE FUNCTION test.skip(msg text) RETURNS VOID AS $$
@@ -338,16 +345,16 @@ CREATE OR REPLACE FUNCTION test.skip(msg text) RETURNS VOID AS $$
 BEGIN
   PERFORM test.finish('SKIP', msg);
 END;
-$$ LANGUAGE plpgsql;
+$$ LANGUAGE plpgsql IMMUTABLE;
 CREATE OR REPLACE FUNCTION test.skip() RETURNS VOID AS $$
 -- Use this to skip a test. Raises exception '[SKIP]'.
 BEGIN
   PERFORM test.finish('SKIP', NULL);
 END;
-$$ LANGUAGE plpgsql;
+$$ LANGUAGE plpgsql IMMUTABLE;
 
 
------------------------------- Test helpers ------------------------------
+------------------------------ Assertions ------------------------------
 
 
 CREATE OR REPLACE FUNCTION test.assert_void(call text) RETURNS VOID AS $$
@@ -519,12 +526,13 @@ CREATE OR REPLACE FUNCTION test.assert_rows(source text, expected text) RETURNS 
 -- Asserts that two sets of rows have equal values.
 --
 -- Both arguments should be SELECT statements yielding a single row or a set of rows.
+-- It is common for the 'expected' arg to be sans a FROM clause, and simply SELECT values.
 -- Neither source nor expected need to be sorted. Either may include a trailing semicolon.
 --
 -- Example:
 -- 
---    PERFORM test.assert_row('SELECT first, last, city FROM table1',
---                            'SELECT ROW(''Davy'', ''Crockett'', NULL)');
+--    PERFORM test.assert_rows('SELECT first, last, city FROM table1',
+--                             'SELECT ''Davy'', ''Crockett'', NULL';
 DECLARE
   rec     record;
 BEGIN
