@@ -102,8 +102,8 @@ BEGIN
   END IF;
   
   -- assert_void() MUST raise an exception if the given call does not return void.
-  PERFORM test.assert_raises('test.assert_void(''pg_namespace'')', 
-    'Call: ''pg_namespace'' did not return void. Got ''pg_toast'' instead.',
+  PERFORM test.assert_raises('test.assert_void(''pg_namespace WHERE nspname = ''''pg_catalog'''''')', 
+    'Call: ''pg_namespace WHERE nspname = ''pg_catalog'''' did not return void. Got ''pg_catalog'' instead.',
     'P0001');
   
   RAISE EXCEPTION '[OK]';
@@ -368,6 +368,41 @@ BEGIN
   END;
   IF NOT failed THEN
     PERFORM test.fail('test.assert_column() did not fail.');
+  END IF;
+  
+  RAISE EXCEPTION '[OK]';
+END;
+$$ LANGUAGE plpgsql;
+
+
+CREATE OR REPLACE FUNCTION test.test_assert_empty() RETURNS VOID AS $$
+-- Assert the correct operation of test.assert_empty
+-- module: test_asserts
+DECLARE
+  failed     bool;
+BEGIN
+  -- Test an assertion that should pass
+  CREATE TEMP TABLE testtemp (a int);
+  PERFORM test.assert_empty('testtemp');
+  -- array version
+  CREATE TEMP TABLE testtemp2 (a int);
+  PERFORM test.assert_empty('testtemp, testtemp2');
+  PERFORM test.assert_empty(ARRAY['testtemp', 'testtemp2']);
+  
+  -- ...and an assertion that should fail
+  failed := false;
+  BEGIN
+    PERFORM test.assert_empty('pg_type,pg_proc');
+  EXCEPTION WHEN OTHERS THEN
+    failed := true;
+    IF SQLERRM = '[FAIL] The tables "pg_type", "pg_proc" are not empty.' THEN
+      NULL;
+    ELSE
+      RAISE EXCEPTION 'test.assert_empty() did not raise the correct error. Raised: %', SQLERRM;
+    END IF;
+  END;
+  IF NOT failed THEN
+    PERFORM test.fail('test.assert_empty() did not fail.');
   END IF;
   
   RAISE EXCEPTION '[OK]';
