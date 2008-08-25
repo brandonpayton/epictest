@@ -210,6 +210,64 @@ CREATE OR REPLACE VIEW test.testnames AS
     AND pg_proc.proname LIKE E'test\_%';
 
 
+-------------------------------- global records --------------------------------
+
+
+CREATE OR REPLACE FUNCTION _ensure_globals() RETURNS boolean AS $$
+BEGIN
+  SET client_min_messages = warning;
+  
+  BEGIN
+    CREATE SEQUENCE _global_ids;
+  EXCEPTION WHEN duplicate_table THEN
+    NULL;
+  END;
+  
+  RETURN TRUE;
+END;
+$$ LANGUAGE plpgsql;
+SELECT * FROM _ensure_globals();
+DROP FUNCTION _ensure_globals();
+
+
+CREATE OR REPLACE FUNCTION global(call text) RETURNS record AS $$
+-- Stores the given call's output in a TEMP table, and returns it as a record.
+-- 
+-- 'call' can be any table, view, or procedure that returns records.
+-- 
+-- The returned record includes the following additional attributes:
+--   * tablename (text): The complete name of the TEMP table. This allows you
+--       to pass my_record_var.tablename to functions that take a 'call text'
+--       argument, such as assert_column, assert_values, and assert_empty
+--       (since no procedural languages support passing records as args).
+DECLARE
+  tablename      text;
+  result         record;
+BEGIN
+  tablename := '_global_' || nextval('_global_ids');
+  EXECUTE 'CREATE TEMP TABLE ' || tablename || ' AS SELECT * FROM ' || call;
+  EXECUTE 'SELECT ''' || tablename || '''::text AS tablename, * FROM ' || tablename INTO result;
+  RETURN result;
+END;
+$$ LANGUAGE plpgsql;
+
+
+CREATE OR REPLACE FUNCTION attributes(tablename text) RETURNS SETOF pg_attribute AS $$
+DECLARE
+  rec      record;
+BEGIN
+  FOR rec IN
+    SELECT * FROM pg_attribute
+    WHERE attrelid = (SELECT oid FROM pg_class WHERE relname = tablename)
+    -- Exclude system columns
+    AND attnum >= 1
+  LOOP
+    RETURN NEXT rec;
+  END LOOP;
+END;
+$$ LANGUAGE plpgsql;
+
+
 ------------------------------ Runners ------------------------------
 
 
@@ -483,7 +541,7 @@ CREATE OR REPLACE FUNCTION test.assert_raises(call text, errm text, state text) 
 -- 
 -- Example:
 --
---    PERFORM test.assert_raises('get_transaction_by_id("a")', 'Bad argument', NULL);
+--    PERFORM test.assert_raises('get_transaction_by_id(''a'')', 'Bad argument', NULL);
 --
 -- If errm or state are NULL, that value will not be tested. This allows
 -- you to test by message alone (since the 5-char SQLSTATE values are cryptic),
@@ -526,7 +584,8 @@ CREATE OR REPLACE FUNCTION test.assert_rows(source text, expected text) RETURNS 
 -- Asserts that two sets of rows have equal values.
 --
 -- Both arguments should be SELECT statements yielding a single row or a set of rows.
--- It is common for the 'expected' arg to be sans a FROM clause, and simply SELECT values.
+-- Either may also be any table, view, or procedure call that returns records.
+-- It is also common for the 'expected' arg to be sans a FROM clause, and simply SELECT values.
 -- Neither source nor expected need to be sorted. Either may include a trailing semicolon.
 --
 -- Example:
@@ -535,13 +594,25 @@ CREATE OR REPLACE FUNCTION test.assert_rows(source text, expected text) RETURNS 
 --                             'SELECT ''Davy'', ''Crockett'', NULL';
 DECLARE
   rec     record;
+  s       text;
+  e       text;
 BEGIN
-  FOR rec in EXECUTE rtrim(source, ';') || ' EXCEPT ' || rtrim(expected, ';')
+  s := rtrim(source, ';');
+  IF NOT s ILIKE 'SELECT%' THEN
+    s := 'SELECT * FROM ' || s;
+  END IF;
+  
+  e := rtrim(expected, ';');
+  IF NOT e ILIKE 'SELECT%' THEN
+    e := 'SELECT * FROM ' || e;
+  END IF;
+  
+  FOR rec in EXECUTE s || ' EXCEPT ' || e
   LOOP
     RAISE EXCEPTION 'Record: % from: % not found in: %', rec, source, expected;
   END LOOP;
   
-  FOR rec in EXECUTE rtrim(expected, ';') || ' EXCEPT ' || rtrim(source, ';')
+  FOR rec in EXECUTE e || ' EXCEPT ' || s
   LOOP
     RAISE EXCEPTION 'Record: % from: % not found in: %', rec, expected, source;
   END LOOP;
@@ -629,6 +700,22 @@ CREATE OR REPLACE FUNCTION test.assert_column(call text, expected anyarray) RETU
 -- Implicit column version of assert_column
 BEGIN
   PERFORM test.assert_column(call, expected, NULL);
+END;
+$$ LANGUAGE plpgsql;
+
+
+CREATE OR REPLACE FUNCTION test.assert_values(call_1 text, call_2 text, columns text) RETURNS VOID AS $$
+-- Raises an exception if SELECT columns FROM call_1 != SELECT columns FROM call_2.
+--
+-- Example:
+--    row_1 := obj('get_favorite_user_ids(' || user_id || ')')
+--    PERFORM test.assert_equal(row_1.object, 'users WHERE user_id = 355', 'last_name');
+--
+BEGIN
+  PERFORM test.assert_rows(
+    'SELECT ' || columns || ' FROM ' || call_1,
+    'SELECT ' || columns || ' FROM ' || call_2
+    );
 END;
 $$ LANGUAGE plpgsql;
 

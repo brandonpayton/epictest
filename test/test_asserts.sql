@@ -314,16 +314,20 @@ BEGIN
   PERFORM test.assert_rows(
     'SELECT tablename FROM pg_tables;',
     'SELECT relname FROM pg_class where relkind = ''r''');
+  -- SELECT-less argument
+  PERFORM test.assert_rows(
+    'SELECT adrelid, adnum, adbin, adsrc FROM pg_attrdef',
+    'pg_attrdef');
   
   -- ...and an assertion that should fail
   failed := false;
   BEGIN
     PERFORM test.assert_rows(
-      'SELECT * FROM generate_series(1, 10)', 
+      'generate_series(1, 10)', 
       'SELECT * FROM generate_series(1, 5)');
   EXCEPTION WHEN OTHERS THEN
     failed := true;
-    IF SQLERRM = 'Record: (6) from: SELECT * FROM generate_series(1, 10) not found in: SELECT * FROM generate_series(1, 5)' THEN
+    IF SQLERRM = 'Record: (6) from: generate_series(1, 10) not found in: SELECT * FROM generate_series(1, 5)' THEN
       NULL;
     ELSE
       RAISE EXCEPTION 'test.assert_rows() did not raise the correct error. Raised: %', SQLERRM;
