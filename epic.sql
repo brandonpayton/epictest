@@ -110,7 +110,7 @@ doesn't hold:
         Raises an exception if SELECT colname FROM call != expected.
     
     * test.assert_raises(call text, errm text, state text): 
-        Raises an exception if 'SELECT * FROM [call];' does not raise errm
+        Raises an exception if call does not raise errm
         (if provided) or state (if provided).
 
 
@@ -210,6 +210,19 @@ CREATE OR REPLACE VIEW test.testnames AS
     AND pg_proc.proname LIKE E'test\_%';
 
 
+CREATE OR REPLACE FUNCTION test.statement(call text) RETURNS text AS $$
+DECLARE
+  result    text;
+BEGIN
+  result := rtrim(call, ';');
+  IF NOT result ILIKE 'SELECT%' THEN
+    result := 'SELECT * FROM ' || result;
+  END IF;
+  RETURN result;
+END;
+$$ LANGUAGE plpgsql;
+
+
 -------------------------------- global records --------------------------------
 
 
@@ -233,7 +246,7 @@ DROP FUNCTION _ensure_globals();
 CREATE OR REPLACE FUNCTION global(call text) RETURNS record AS $$
 -- Stores the given call's output in a TEMP table, and returns it as a record.
 -- 
--- 'call' can be any table, view, or procedure that returns records.
+-- 'call' can be any SELECT, table, view, or procedure that returns records.
 -- 
 -- The returned record includes the following additional attributes:
 --   * tablename (text): The complete name of the TEMP table. This allows you
@@ -245,7 +258,7 @@ DECLARE
   result         record;
 BEGIN
   tablename := '_global_' || nextval('_global_ids');
-  EXECUTE 'CREATE TEMP TABLE ' || tablename || ' AS SELECT * FROM ' || call;
+  EXECUTE 'CREATE TEMP TABLE ' || tablename || ' AS ' || statement(call);
   EXECUTE 'SELECT ''' || tablename || '''::text AS tablename, * FROM ' || tablename INTO result;
   RETURN result;
 END;
@@ -420,7 +433,7 @@ CREATE OR REPLACE FUNCTION test.assert_void(call text) RETURNS VOID AS $$
 DECLARE
   retval    text;
 BEGIN
-  EXECUTE ('SELECT * FROM ' || call || ';') INTO retval;
+  EXECUTE statement(call) INTO retval;
   IF retval != '' THEN
     RAISE EXCEPTION 'Call: ''%'' did not return void. Got ''%'' instead.', call, retval;
   END IF;
@@ -537,7 +550,7 @@ $$ LANGUAGE plpgsql IMMUTABLE;
 
 
 CREATE OR REPLACE FUNCTION test.assert_raises(call text, errm text, state text) RETURNS VOID AS $$
--- Raises an exception if 'SELECT * FROM [call];' does not raise errm and/or state.
+-- Raises an exception if call does not raise errm and/or state.
 -- 
 -- Example:
 --
@@ -552,7 +565,7 @@ CREATE OR REPLACE FUNCTION test.assert_raises(call text, errm text, state text) 
 -- SQLSTATE and SQLERRM that were raised.
 BEGIN
   BEGIN
-    EXECUTE 'SELECT * FROM '||call||';';
+    EXECUTE statement(call);
   EXCEPTION
     WHEN OTHERS THEN
       IF ((state IS NOT NULL AND SQLSTATE != state) OR
@@ -597,15 +610,8 @@ DECLARE
   s       text;
   e       text;
 BEGIN
-  s := rtrim(source, ';');
-  IF NOT s ILIKE 'SELECT%' THEN
-    s := 'SELECT * FROM ' || s;
-  END IF;
-  
-  e := rtrim(expected, ';');
-  IF NOT e ILIKE 'SELECT%' THEN
-    e := 'SELECT * FROM ' || e;
-  END IF;
+  s := statement(source);
+  e := statement(expected);
   
   FOR rec in EXECUTE s || ' EXCEPT ' || e
   LOOP
@@ -642,8 +648,7 @@ DECLARE
 BEGIN
   -- Dump the call output into a temp table
   IF colname IS NULL THEN
-    EXECUTE 'CREATE TEMPORARY TABLE _test_assert_values_base AS ' ||
-      'SELECT * FROM ' || call || ';';
+    EXECUTE 'CREATE TEMPORARY TABLE _test_assert_values_base AS ' || statement(call);
     SELECT INTO firstname a.attname
       FROM pg_class c LEFT JOIN pg_attribute a ON c.oid = a.attrelid
       WHERE c.relname = '_test_assert_values_base'
