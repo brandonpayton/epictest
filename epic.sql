@@ -107,7 +107,7 @@ doesn't hold:
     * test.assert_rows(row_1 text, row_2 text):
         Raises an exception if the SELECT statement row_1 != the SELECT statement row_2.
     * test.assert_column(call text, expected anyarray[, colname text]):
-        Raises an exception if SELECT colname FROM call != expected.
+        Raises an exception if SELECT colname FROM call != expected (in order).
     
     * test.assert_raises(call text, errm text, state text): 
         Raises an exception if call does not raise errm
@@ -648,14 +648,12 @@ $$ LANGUAGE plpgsql IMMUTABLE;
 
 
 CREATE OR REPLACE FUNCTION test.assert_column(call text, expected anyarray, colname text) RETURNS VOID AS $$
--- Raises an exception if SELECT colname FROM call != expected.
+-- Raises an exception if SELECT colname FROM call != expected (in order).
 --
 -- If colname is NULL or omitted, the first column of call's output will be used.
 --
 -- 'call' can be any table, view, or procedure that returns records.
--- 
 -- 'expected' MUST be an array of the same type as colname.
--- Neither call nor expected need to be sorted.
 -- 
 -- Example:
 --    PERFORM test.assert_column(
@@ -664,8 +662,12 @@ CREATE OR REPLACE FUNCTION test.assert_column(call text, expected anyarray, coln
 -- 
 DECLARE
   i             integer;
-  record        record;
+  record1       record;
+  record2       record;
+  curs_base     refcursor;
+  curs_expected refcursor;
   firstname     text;
+  found_1       boolean;
 BEGIN
   -- Dump the call output into a temp table
   IF colname IS NULL THEN
@@ -700,19 +702,27 @@ BEGIN
     END IF;
   END LOOP;
   
-  -- Compare the two tables in setwise fashion.
+  -- Compare the two tables in order.
   <<TRY>>
   BEGIN
-    FOR record IN EXECUTE '(SELECT * FROM _test_assert_column_base EXCEPT ALL
-                            SELECT * FROM _test_assert_column_expected)'
+    OPEN curs_base FOR EXECUTE 'SELECT * FROM _test_assert_column_base';
+    OPEN curs_expected FOR EXECUTE 'SELECT * FROM _test_assert_column_expected';
     LOOP
-      RAISE EXCEPTION 'result: % not in array: %', record._assert_column_result, expected;
-    END LOOP;
-    
-    FOR record IN EXECUTE '(SELECT * FROM _test_assert_column_expected EXCEPT ALL
-                            SELECT * FROM _test_assert_column_base)'
-    LOOP
-      RAISE EXCEPTION 'element: % not in call: %', record._assert_column_result, call;
+      FETCH curs_base INTO record1;
+      found_1 := FOUND;
+      FETCH curs_expected INTO record2;
+      IF FOUND THEN
+        IF NOT found_1 THEN
+          PERFORM test.fail('element: ' || record2._assert_column_result || ' not found in call: ' || call);
+        END IF;
+      ELSE
+        IF NOT found_1 THEN
+          EXIT;
+        ELSE
+          PERFORM test.fail('record: ' || record1._assert_column_result || ' not found in array: ' || array_to_string(expected));
+        END IF;
+      END IF;
+      PERFORM test.assert_equal(record1._assert_column_result, record2._assert_column_result);
     END LOOP;
   EXCEPTION WHEN OTHERS THEN
     DROP TABLE _test_assert_column_base;
@@ -720,6 +730,8 @@ BEGIN
     RAISE EXCEPTION '%', SQLERRM;
   END TRY;
   
+  CLOSE curs_base;
+  CLOSE curs_expected;
   DROP TABLE _test_assert_column_base;
   EXECUTE 'DROP TABLE _test_assert_column_expected';
 END;
