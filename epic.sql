@@ -245,6 +245,7 @@ DROP FUNCTION _ensure_globals();
 
 CREATE OR REPLACE FUNCTION global(call text) RETURNS record AS $$
 -- Stores the given call's output in a TEMP table, and returns it as a record.
+-- If the call produces several rows, only the first record is returned.
 -- 
 -- 'call' can be any SELECT, table, view, or procedure that returns records.
 -- 
@@ -258,8 +259,12 @@ DECLARE
   result         record;
 BEGIN
   tablename := '_global_' || nextval('_global_ids');
-  EXECUTE 'CREATE TEMP TABLE ' || tablename || ' AS ' || statement(call);
-  EXECUTE 'SELECT ''' || tablename || '''::text AS tablename, * FROM ' || tablename INTO result;
+  EXECUTE 'CREATE TEMP TABLE ' || tablename || ' AS ' || test.statement(call);
+  EXECUTE 'SELECT ''' || tablename || '''::text AS tablename, * FROM ' || tablename || ' LIMIT 1' INTO result;
+  IF result.tablename IS NULL THEN
+    -- Our temp table has no rows, so our tablename wasn't selected either.
+    result.tablename := tablename;
+  END IF;
   RETURN result;
 END;
 $$ LANGUAGE plpgsql;
@@ -277,6 +282,22 @@ BEGIN
   LOOP
     RETURN NEXT rec;
   END LOOP;
+END;
+$$ LANGUAGE plpgsql;
+
+
+CREATE OR REPLACE FUNCTION typename(elem anyelement) RETURNS text AS $$
+-- Return the typename of the given element.
+DECLARE
+  name    text;
+BEGIN
+  CREATE TEMP TABLE _elem_type AS SELECT elem;
+  SELECT INTO name pgt.typname
+    FROM pg_attribute pga LEFT JOIN pg_type pgt ON pga.atttypid = pgt.oid
+    WHERE pga.attrelid = (SELECT oid FROM pg_class WHERE relname = '_elem_type')
+    AND pga.attnum = 1;
+  DROP TABLE _elem_type;
+  RETURN name;
 END;
 $$ LANGUAGE plpgsql;
 
@@ -433,7 +454,7 @@ CREATE OR REPLACE FUNCTION test.assert_void(call text) RETURNS VOID AS $$
 DECLARE
   retval    text;
 BEGIN
-  EXECUTE statement(call) INTO retval;
+  EXECUTE test.statement(call) INTO retval;
   IF retval != '' THEN
     RAISE EXCEPTION 'Call: ''%'' did not return void. Got ''%'' instead.', call, retval;
   END IF;
@@ -565,7 +586,7 @@ CREATE OR REPLACE FUNCTION test.assert_raises(call text, errm text, state text) 
 -- SQLSTATE and SQLERRM that were raised.
 BEGIN
   BEGIN
-    EXECUTE statement(call);
+    EXECUTE test.statement(call);
   EXCEPTION
     WHEN OTHERS THEN
       IF ((state IS NOT NULL AND SQLSTATE != state) OR
@@ -610,8 +631,8 @@ DECLARE
   s       text;
   e       text;
 BEGIN
-  s := statement(source);
-  e := statement(expected);
+  s := test.statement(source);
+  e := test.statement(expected);
   
   FOR rec in EXECUTE s || ' EXCEPT ' || e
   LOOP
@@ -648,56 +669,59 @@ DECLARE
 BEGIN
   -- Dump the call output into a temp table
   IF colname IS NULL THEN
-    EXECUTE 'CREATE TEMPORARY TABLE _test_assert_values_base AS ' || statement(call);
+    EXECUTE 'CREATE TEMPORARY TABLE _test_assert_column_base AS ' || test.statement(call);
     SELECT INTO firstname a.attname
       FROM pg_class c LEFT JOIN pg_attribute a ON c.oid = a.attrelid
-      WHERE c.relname = '_test_assert_values_base'
+      WHERE c.relname = '_test_assert_column_base'
       -- "The number of the column. Ordinary columns are numbered from 1 up.
       -- System columns, such as oid, have (arbitrary) negative numbers"
       AND a.attnum >= 1
       ORDER BY a.attnum;
-    EXECUTE 'ALTER TABLE _test_assert_values_base RENAME ' || firstname || ' TO _assert_values_result;';
+    EXECUTE 'ALTER TABLE _test_assert_column_base RENAME ' || firstname || ' TO _assert_column_result;';
   ELSE
-    EXECUTE 'CREATE TEMPORARY TABLE _test_assert_values_base AS ' ||
-      'SELECT ' || colname || ' AS _assert_values_result FROM ' || call || ';';
+    EXECUTE 'CREATE TEMPORARY TABLE _test_assert_column_base AS ' ||
+      'SELECT ' || colname || ' AS _assert_column_result FROM ' || call || ';';
   END IF;
   
   -- Dump the provided array into a temp table
   -- Use EXECUTE for all statements involving this table so its query plan
   -- doesn't get cached and re-used (or subsequent calls will fail).
-  EXECUTE 'CREATE TEMPORARY TABLE _test_assert_values_expected (LIKE _test_assert_values_base);';
+  EXECUTE 'CREATE TEMPORARY TABLE _test_assert_column_expected (LIKE _test_assert_column_base);';
   FOR i IN array_lower(expected, 1)..array_upper(expected, 1)
   LOOP
     IF expected[i] IS NULL THEN
-      EXECUTE 'INSERT INTO _test_assert_values_expected (_assert_values_result) VALUES (NULL);';
-    ELSE
-      EXECUTE 'INSERT INTO _test_assert_values_expected (_assert_values_result) VALUES ('
+      EXECUTE 'INSERT INTO _test_assert_column_expected (_assert_column_result) VALUES (NULL);';
+    ELSEIF typename(expected[i]) IN ('text', 'varchar', 'char', 'bytea', 'date', 'timestamp', 'timestamptz', 'time', 'timetz') THEN
+      EXECUTE 'INSERT INTO _test_assert_column_expected (_assert_column_result) VALUES ('
               || quote_literal(expected[i]) || ');';
+    ELSE
+      EXECUTE 'INSERT INTO _test_assert_column_expected (_assert_column_result) VALUES ('
+              || expected[i] || ');';
     END IF;
   END LOOP;
   
   -- Compare the two tables in setwise fashion.
   <<TRY>>
   BEGIN
-    FOR record IN EXECUTE '(SELECT * FROM _test_assert_values_base EXCEPT ALL
-                            SELECT * FROM _test_assert_values_expected)'
+    FOR record IN EXECUTE '(SELECT * FROM _test_assert_column_base EXCEPT ALL
+                            SELECT * FROM _test_assert_column_expected)'
     LOOP
-      RAISE EXCEPTION 'result: % not in array: %', record._assert_values_result, expected;
+      RAISE EXCEPTION 'result: % not in array: %', record._assert_column_result, expected;
     END LOOP;
     
-    FOR record IN EXECUTE '(SELECT * FROM _test_assert_values_expected EXCEPT ALL
-                            SELECT * FROM _test_assert_values_base)'
+    FOR record IN EXECUTE '(SELECT * FROM _test_assert_column_expected EXCEPT ALL
+                            SELECT * FROM _test_assert_column_base)'
     LOOP
-      RAISE EXCEPTION 'element: % not in call: %', record._assert_values_result, call;
+      RAISE EXCEPTION 'element: % not in call: %', record._assert_column_result, call;
     END LOOP;
   EXCEPTION WHEN OTHERS THEN
-    DROP TABLE _test_assert_values_base;
-    EXECUTE 'DROP TABLE _test_assert_values_expected';
+    DROP TABLE _test_assert_column_base;
+    EXECUTE 'DROP TABLE _test_assert_column_expected';
     RAISE EXCEPTION '%', SQLERRM;
   END TRY;
   
-  DROP TABLE _test_assert_values_base;
-  EXECUTE 'DROP TABLE _test_assert_values_expected';
+  DROP TABLE _test_assert_column_base;
+  EXECUTE 'DROP TABLE _test_assert_column_expected';
 END;
 $$ LANGUAGE plpgsql;
 

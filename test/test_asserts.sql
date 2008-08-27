@@ -357,6 +357,15 @@ BEGIN
     'generate_series(1, 10);',
     ARRAY[1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
     'generate_series');
+  -- text fields
+  PERFORM test.assert_column(
+    'pg_namespace WHERE nspname IN (''public'', ''test'')',
+    ARRAY['public', 'test'],
+    'nspname');
+  -- timestamp fields. This also tests omitted colname
+  PERFORM test.assert_column(
+    'SELECT ''2007-04-13 09:28:54.132132''::timestamptz',
+    ARRAY['2007-04-13 09:28:54.132132'::timestamptz]);
   
   -- ...and an assertion that should fail
   failed := false;
