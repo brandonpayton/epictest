@@ -373,7 +373,7 @@ BEGIN
     PERFORM test.assert_column('generate_series(1, 10);', ARRAY[1, 2]);
   EXCEPTION WHEN OTHERS THEN
     failed := true;
-    IF SQLERRM = '[FAIL] record: 3 not found in array: 1,2' THEN
+    IF SQLERRM = '[FAIL] record: 3 not found in array: 1, 2' THEN
       NULL;
     ELSE
       RAISE EXCEPTION 'test.assert_column() did not raise the correct error. Raised: %', SQLERRM;

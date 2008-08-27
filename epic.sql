@@ -661,7 +661,6 @@ CREATE OR REPLACE FUNCTION test.assert_column(call text, expected anyarray, coln
 --      ARRAY[24, 10074, 87321], 'user_id');
 -- 
 DECLARE
-  i             integer;
   record1       record;
   record2       record;
   curs_base     refcursor;
@@ -689,18 +688,20 @@ BEGIN
   -- Use EXECUTE for all statements involving this table so its query plan
   -- doesn't get cached and re-used (or subsequent calls will fail).
   EXECUTE 'CREATE TEMPORARY TABLE _test_assert_column_expected (LIKE _test_assert_column_base);';
-  FOR i IN array_lower(expected, 1)..array_upper(expected, 1)
-  LOOP
-    IF expected[i] IS NULL THEN
-      EXECUTE 'INSERT INTO _test_assert_column_expected (_assert_column_result) VALUES (NULL);';
-    ELSEIF typename(expected[i]) IN ('text', 'varchar', 'char', 'bytea', 'date', 'timestamp', 'timestamptz', 'time', 'timetz') THEN
-      EXECUTE 'INSERT INTO _test_assert_column_expected (_assert_column_result) VALUES ('
-              || quote_literal(expected[i]) || ');';
-    ELSE
-      EXECUTE 'INSERT INTO _test_assert_column_expected (_assert_column_result) VALUES ('
-              || expected[i] || ');';
-    END IF;
-  END LOOP;
+  IF array_lower(expected, 1) iS NOT NULL THEN
+    FOR i IN array_lower(expected, 1)..array_upper(expected, 1)
+    LOOP
+      IF expected[i] IS NULL THEN
+        EXECUTE 'INSERT INTO _test_assert_column_expected (_assert_column_result) VALUES (NULL);';
+      ELSEIF typename(expected[i]) IN ('text', 'varchar', 'char', 'bytea', 'date', 'timestamp', 'timestamptz', 'time', 'timetz') THEN
+        EXECUTE 'INSERT INTO _test_assert_column_expected (_assert_column_result) VALUES ('
+                || quote_literal(expected[i]) || ');';
+      ELSE
+        EXECUTE 'INSERT INTO _test_assert_column_expected (_assert_column_result) VALUES ('
+                || expected[i] || ');';
+      END IF;
+    END LOOP;
+  END IF;
   
   -- Compare the two tables in order.
   <<TRY>>
@@ -719,7 +720,7 @@ BEGIN
         IF NOT found_1 THEN
           EXIT;
         ELSE
-          PERFORM test.fail('record: ' || record1._assert_column_result || ' not found in array: ' || array_to_string(expected));
+          PERFORM test.fail('record: ' || record1._assert_column_result || ' not found in array: ' || array_to_string(expected, ', '));
         END IF;
       END IF;
       PERFORM test.assert_equal(record1._assert_column_result, record2._assert_column_result);
@@ -767,21 +768,24 @@ DECLARE
   result      bool;
   failed      text[];
   failed_len  int;
-  i           int;
 BEGIN
-  FOR i in array_lower(tablenames, 1)..array_upper(tablenames, 1)
-  LOOP
-    EXECUTE 'SELECT (EXISTS (SELECT 1 FROM ' || tablenames[i] || '));' INTO result;
-    IF result THEN
-      failed := failed || ('"' || btrim(tablenames[i]) || '"');
-    END IF;
-  END LOOP;
+  IF array_lower(tablenames, 1) IS NOT NULL THEN
+    FOR i in array_lower(tablenames, 1)..array_upper(tablenames, 1)
+    LOOP
+      EXECUTE 'SELECT (EXISTS (SELECT 1 FROM ' || tablenames[i] || '));' INTO result;
+      IF result THEN
+        failed := failed || ('"' || btrim(tablenames[i]) || '"');
+      END IF;
+    END LOOP;
+  END IF;
   
-  failed_len := (array_upper(failed, 1) - array_lower(failed, 1)) + 1;
-  IF failed_len = 1 THEN
-    PERFORM test.fail('The table ' || array_to_string(failed, ', ') || ' is not empty.');
-  ELSEIF failed_len > 1 THEN
-    PERFORM test.fail('The tables ' || array_to_string(failed, ', ') || ' are not empty.');
+  IF array_lower(failed, 1) IS NOT NULL THEN
+    failed_len := (array_upper(failed, 1) - array_lower(failed, 1)) + 1;
+    IF failed_len = 1 THEN
+      PERFORM test.fail('The table ' || array_to_string(failed, ', ') || ' is not empty.');
+    ELSEIF failed_len > 1 THEN
+      PERFORM test.fail('The tables ' || array_to_string(failed, ', ') || ' are not empty.');
+    END IF;
   END IF;
 END;
 $$ LANGUAGE plpgsql;
@@ -799,6 +803,55 @@ BEGIN
   EXECUTE 'SELECT (EXISTS (SELECT 1 FROM ' || tablename || '));' INTO result;
   IF result THEN
     PERFORM test.fail('The table "' || tablename || '" is not empty.');
+  END IF;
+END;
+$$ LANGUAGE plpgsql;
+
+
+CREATE OR REPLACE FUNCTION test.assert_not_empty(tablenames text[]) RETURNS VOID AS $$
+-- Raises an exception if the given tables have no rows.
+DECLARE
+  result      bool;
+  failed      text[];
+  failed_len  int;
+BEGIN
+  IF array_lower(tablenames, 1) IS NOT NULL THEN
+    FOR i in array_lower(tablenames, 1)..array_upper(tablenames, 1)
+    LOOP
+      EXECUTE 'SELECT (EXISTS (SELECT 1 FROM ' || tablenames[i] || '));' INTO result;
+      IF NOT result THEN
+        failed := failed || ('"' || btrim(tablenames[i]) || '"');
+      END IF;
+    END LOOP;
+  END IF;
+  
+  IF array_lower(failed, 1) IS NULL THEN
+    -- failed is an empty array (no failures).
+    NULL;
+  ELSE
+    failed_len := (array_upper(failed, 1) - array_lower(failed, 1)) + 1;
+    IF failed_len = 1 THEN
+      PERFORM test.fail('The table ' || array_to_string(failed, ', ') || ' is empty.');
+    ELSEIF failed_len > 1 THEN
+      PERFORM test.fail('The tables ' || array_to_string(failed, ', ') || ' are empty.');
+    END IF;
+  END IF;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION test.assert_not_empty(tablename text) RETURNS VOID AS $$
+-- Raises an exception if the given table has no rows.
+DECLARE
+  result    bool;
+BEGIN
+  IF tablename LIKE '%,%' THEN
+    PERFORM test.assert_not_empty(string_to_array(tablename, ','));
+    RETURN;
+  END IF;
+  
+  EXECUTE 'SELECT (EXISTS (SELECT 1 FROM ' || tablename || '));' INTO result;
+  IF NOT result THEN
+    PERFORM test.fail('The table "' || tablename || '" is empty.');
   END IF;
 END;
 $$ LANGUAGE plpgsql;
