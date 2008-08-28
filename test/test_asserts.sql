@@ -399,16 +399,16 @@ BEGIN
   PERFORM test.assert_empty('testtemp');
   -- array version
   CREATE TEMP TABLE testtemp2 (a int);
-  PERFORM test.assert_empty('testtemp, testtemp2');
+  PERFORM test.assert_empty('{testtemp, testtemp2}'::text[]);
   PERFORM test.assert_empty(ARRAY['testtemp', 'testtemp2']);
   
   -- ...and an assertion that should fail
   failed := false;
   BEGIN
-    PERFORM test.assert_empty('pg_type,pg_proc');
+    PERFORM test.assert_empty('{pg_type,pg_proc}'::text[]);
   EXCEPTION WHEN OTHERS THEN
     failed := true;
-    IF SQLERRM = '[FAIL] The tables "pg_type", "pg_proc" are not empty.' THEN
+    IF SQLERRM = '[FAIL] The calls "pg_type", "pg_proc" are not empty.' THEN
       NULL;
     ELSE
       RAISE EXCEPTION 'test.assert_empty() did not raise the correct error. Raised: %', SQLERRM;
@@ -416,6 +416,42 @@ BEGIN
   END;
   IF NOT failed THEN
     PERFORM test.fail('test.assert_empty() did not fail.');
+  END IF;
+  
+  RAISE EXCEPTION '[OK]';
+END;
+$$ LANGUAGE plpgsql;
+
+
+CREATE OR REPLACE FUNCTION test.test_assert_not_empty() RETURNS VOID AS $$
+-- Assert the correct operation of test.assert_not_empty
+-- module: test_asserts
+DECLARE
+  failed     bool;
+BEGIN
+  -- Test an assertion that should pass
+  CREATE TEMP TABLE testtemp AS SELECT * FROM generate_series(1, 10);
+  PERFORM test.assert_not_empty('testtemp');
+  -- array version
+  CREATE TEMP TABLE testtemp2 AS SELECT * FROM generate_series(1, 5);
+  PERFORM test.assert_not_empty('{testtemp, testtemp2}'::text[]);
+  PERFORM test.assert_not_empty(ARRAY['testtemp', 'testtemp2']);
+  
+  -- ...and an assertion that should fail
+  CREATE TEMP TABLE testtemp3 (a int);
+  failed := false;
+  BEGIN
+    PERFORM test.assert_not_empty('testtemp3');
+  EXCEPTION WHEN OTHERS THEN
+    failed := true;
+    IF SQLERRM = '[FAIL] The call "testtemp3" is empty.' THEN
+      NULL;
+    ELSE
+      RAISE EXCEPTION 'test.assert_not_empty() did not raise the correct error. Raised: %', SQLERRM;
+    END IF;
+  END;
+  IF NOT failed THEN
+    PERFORM test.fail('test.assert_not_empty() did not fail.');
   END IF;
   
   RAISE EXCEPTION '[OK]';

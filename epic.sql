@@ -345,7 +345,7 @@ DECLARE
   testname        pg_proc.proname%TYPE;
   output_record   test.results%ROWTYPE;
 BEGIN
-  FOR testname IN SELECT name FROM test.testnames WHERE module = modulename
+  FOR testname IN SELECT name FROM test.testnames WHERE module = modulename ORDER BY name ASC
   LOOP
     SELECT INTO output_record * FROM test.run_test(testname);
     RETURN NEXT output_record;
@@ -363,7 +363,7 @@ DECLARE
 BEGIN
   FOR modulename in SELECT DISTINCT module FROM test.testnames ORDER BY module ASC
   LOOP
-    FOR testname IN SELECT name FROM test.testnames WHERE module = modulename
+    FOR testname IN SELECT name FROM test.testnames WHERE module = modulename ORDER BY name ASC
     LOOP
       SELECT INTO output_record * FROM test.run_test(testname);
       RETURN NEXT output_record;
@@ -762,19 +762,19 @@ END;
 $$ LANGUAGE plpgsql;
 
 
-CREATE OR REPLACE FUNCTION test.assert_empty(tablenames text[]) RETURNS VOID AS $$
--- Raises an exception if the given tables have any rows.
+CREATE OR REPLACE FUNCTION test.assert_empty(calls text[]) RETURNS VOID AS $$
+-- Raises an exception if the given calls have any rows.
 DECLARE
   result      bool;
   failed      text[];
   failed_len  int;
 BEGIN
-  IF array_lower(tablenames, 1) IS NOT NULL THEN
-    FOR i in array_lower(tablenames, 1)..array_upper(tablenames, 1)
+  IF array_lower(calls, 1) IS NOT NULL THEN
+    FOR i in array_lower(calls, 1)..array_upper(calls, 1)
     LOOP
-      EXECUTE 'SELECT (EXISTS (SELECT 1 FROM ' || tablenames[i] || '));' INTO result;
+      EXECUTE 'SELECT EXISTS (' || test.statement(calls[i]) || ');' INTO result;
       IF result THEN
-        failed := failed || ('"' || btrim(tablenames[i]) || '"');
+        failed := failed || ('"' || btrim(calls[i]) || '"');
       END IF;
     END LOOP;
   END IF;
@@ -782,45 +782,40 @@ BEGIN
   IF array_lower(failed, 1) IS NOT NULL THEN
     failed_len := (array_upper(failed, 1) - array_lower(failed, 1)) + 1;
     IF failed_len = 1 THEN
-      PERFORM test.fail('The table ' || array_to_string(failed, ', ') || ' is not empty.');
+      PERFORM test.fail('The call ' || array_to_string(failed, ', ') || ' is not empty.');
     ELSEIF failed_len > 1 THEN
-      PERFORM test.fail('The tables ' || array_to_string(failed, ', ') || ' are not empty.');
+      PERFORM test.fail('The calls ' || array_to_string(failed, ', ') || ' are not empty.');
     END IF;
   END IF;
 END;
 $$ LANGUAGE plpgsql;
 
-CREATE OR REPLACE FUNCTION test.assert_empty(tablename text) RETURNS VOID AS $$
--- Raises an exception if the given table has any rows.
+CREATE OR REPLACE FUNCTION test.assert_empty(call text) RETURNS VOID AS $$
+-- Raises an exception if the given call returns any rows.
 DECLARE
   result    bool;
 BEGIN
-  IF tablename LIKE '%,%' THEN
-    PERFORM test.assert_empty(string_to_array(tablename, ','));
-    RETURN;
-  END IF;
-  
-  EXECUTE 'SELECT (EXISTS (SELECT 1 FROM ' || tablename || '));' INTO result;
+  EXECUTE 'SELECT EXISTS (' || test.statement(call) || ');' INTO result;
   IF result THEN
-    PERFORM test.fail('The table "' || tablename || '" is not empty.');
+    PERFORM test.fail('The call "' || call || '" is not empty.');
   END IF;
 END;
 $$ LANGUAGE plpgsql;
 
 
-CREATE OR REPLACE FUNCTION test.assert_not_empty(tablenames text[]) RETURNS VOID AS $$
--- Raises an exception if the given tables have no rows.
+CREATE OR REPLACE FUNCTION test.assert_not_empty(calls text[]) RETURNS VOID AS $$
+-- Raises an exception if the given calls have no rows.
 DECLARE
   result      bool;
   failed      text[];
   failed_len  int;
 BEGIN
-  IF array_lower(tablenames, 1) IS NOT NULL THEN
-    FOR i in array_lower(tablenames, 1)..array_upper(tablenames, 1)
+  IF array_lower(calls, 1) IS NOT NULL THEN
+    FOR i in array_lower(calls, 1)..array_upper(calls, 1)
     LOOP
-      EXECUTE 'SELECT (EXISTS (SELECT 1 FROM ' || tablenames[i] || '));' INTO result;
+      EXECUTE 'SELECT EXISTS (' || test.statement(calls[i]) || ');' INTO result;
       IF NOT result THEN
-        failed := failed || ('"' || btrim(tablenames[i]) || '"');
+        failed := failed || ('"' || btrim(calls[i]) || '"');
       END IF;
     END LOOP;
   END IF;
@@ -831,27 +826,22 @@ BEGIN
   ELSE
     failed_len := (array_upper(failed, 1) - array_lower(failed, 1)) + 1;
     IF failed_len = 1 THEN
-      PERFORM test.fail('The table ' || array_to_string(failed, ', ') || ' is empty.');
+      PERFORM test.fail('The call ' || array_to_string(failed, ', ') || ' is empty.');
     ELSEIF failed_len > 1 THEN
-      PERFORM test.fail('The tables ' || array_to_string(failed, ', ') || ' are empty.');
+      PERFORM test.fail('The calls ' || array_to_string(failed, ', ') || ' are empty.');
     END IF;
   END IF;
 END;
 $$ LANGUAGE plpgsql;
 
-CREATE OR REPLACE FUNCTION test.assert_not_empty(tablename text) RETURNS VOID AS $$
+CREATE OR REPLACE FUNCTION test.assert_not_empty(call text) RETURNS VOID AS $$
 -- Raises an exception if the given table has no rows.
 DECLARE
   result    bool;
 BEGIN
-  IF tablename LIKE '%,%' THEN
-    PERFORM test.assert_not_empty(string_to_array(tablename, ','));
-    RETURN;
-  END IF;
-  
-  EXECUTE 'SELECT (EXISTS (SELECT 1 FROM ' || tablename || '));' INTO result;
+  EXECUTE 'SELECT EXISTS (' || test.statement(call) || ');' INTO result;
   IF NOT result THEN
-    PERFORM test.fail('The table "' || tablename || '" is empty.');
+    PERFORM test.fail('The call "' || call || '" is empty.');
   END IF;
 END;
 $$ LANGUAGE plpgsql;
