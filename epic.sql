@@ -614,12 +614,12 @@ END;
 $$ LANGUAGE plpgsql;
 
 
-CREATE OR REPLACE FUNCTION test.assert_rows(source text, expected text) RETURNS VOID AS $$
+CREATE OR REPLACE FUNCTION test.assert_rows(call_1 text, call_2 text) RETURNS VOID AS $$
 -- Asserts that two sets of rows have equal values.
 --
 -- Both arguments should be SELECT statements yielding a single row or a set of rows.
 -- Either may also be any table, view, or procedure call that returns records.
--- It is also common for the 'expected' arg to be sans a FROM clause, and simply SELECT values.
+-- It is also common for the second arg to be sans a FROM clause, and simply SELECT values.
 -- Neither source nor expected need to be sorted. Either may include a trailing semicolon.
 --
 -- Example:
@@ -631,17 +631,17 @@ DECLARE
   s       text;
   e       text;
 BEGIN
-  s := test.statement(source);
-  e := test.statement(expected);
+  s := test.statement(call_1);
+  e := test.statement(call_2);
   
   FOR rec in EXECUTE s || ' EXCEPT ' || e
   LOOP
-    RAISE EXCEPTION 'Record: % from: % not found in: %', rec, source, expected;
+    RAISE EXCEPTION 'Record: % from: % not found in: %', rec, call_1, call_2;
   END LOOP;
   
   FOR rec in EXECUTE e || ' EXCEPT ' || s
   LOOP
-    RAISE EXCEPTION 'Record: % from: % not found in: %', rec, expected, source;
+    RAISE EXCEPTION 'Record: % from: % not found in: %', rec, call_2, call_1;
   END LOOP;
 END;
 $$ LANGUAGE plpgsql IMMUTABLE;
