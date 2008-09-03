@@ -243,6 +243,31 @@ SELECT * FROM _ensure_globals();
 DROP FUNCTION _ensure_globals();
 
 
+-- Note this is in the public schema!!
+CREATE OR REPLACE FUNCTION _global_record(tablename text, creator text) RETURNS record AS $$
+DECLARE
+  result         record;
+  record_stmt    text;
+BEGIN
+  EXECUTE 'SELECT NULL::text AS __name__, NULL::text AS __create__, '
+       || 'NULL::text AS __record__, NULL::text AS __iter__, '
+       || 'NULL::text AS __attributes__, 0::int AS __len__, '
+       || '* FROM ' || tablename || ' LIMIT 1' INTO result;
+  
+  -- We add these values outside the EXECUTE in case the TEMP table has no rows.
+  result.__name__ := tablename;
+  result.__create__ := creator;
+  result.__record__ := 'SELECT * FROM _global_record(''' || tablename || ''', ''' || creator || ''')';
+  result.__iter__ := 'SELECT * FROM ' || tablename;
+  result.__attributes__ := 'SELECT attname FROM test.attributes(''' || tablename || ''')';
+  EXECUTE 'SELECT COUNT(*) FROM ' || tablename INTO result.__len__;
+  
+  RETURN result;
+END;
+$$ LANGUAGE plpgsql;
+
+
+-- Note this is in the public schema!!
 CREATE OR REPLACE FUNCTION global(call text) RETURNS record AS $$
 -- Stores the given call's output in a TEMP table, and returns it as a record.
 -- If the call produces several rows, only the first record is returned.
@@ -250,27 +275,35 @@ CREATE OR REPLACE FUNCTION global(call text) RETURNS record AS $$
 -- 'call' can be any SELECT, table, view, or procedure that returns records.
 -- 
 -- The returned record includes the following additional attributes:
---   * tablename (text): The complete name of the TEMP table. This allows you
---       to pass my_record_var.tablename to functions that take a 'call text'
---       argument, such as assert_column, assert_values, and assert_empty
---       (since no procedural languages support passing records as args).
+--   * __name__ (text): The complete name of the TEMP table. This allows you
+--       to pass g.__name__ to functions that take a 'call text' argument,
+--       such as assert_column, assert_values, and assert_empty (since no
+--       procedural languages support passing records as args).
+--   * __create__ (text): The SQL statement used to construct the table.
+--   * __record__ (text): The SQL statement used to construct the returned record.
+--       Use this to copy the returned record (perhaps in another function).
+--       Example: EXECUTE g.__record__ INTO g2;
+--   * __iter__ (text): An SQL string to SELECT * FROM the TEMP table.
+--       Example: FOR record IN EXECUTE g.__iter__
+--   * __attributes__ (text): The SQL string for TEMP table column names.
+--       Example: FOR colname IN EXECUTE g.__attributes__
+--   * __len__ (int): The number of rows in the TEMP table. This value
+--       is NOT updated if you change the table after its creation.
 DECLARE
   tablename      text;
+  creator        text;
   result         record;
 BEGIN
   tablename := '_global_' || nextval('_global_ids');
-  EXECUTE 'CREATE TEMP TABLE ' || tablename || ' AS ' || test.statement(call);
-  EXECUTE 'SELECT ''' || tablename || '''::text AS tablename, * FROM ' || tablename || ' LIMIT 1' INTO result;
-  IF result.tablename IS NULL THEN
-    -- Our temp table has no rows, so our tablename wasn't selected either.
-    result.tablename := tablename;
-  END IF;
+  creator := test.statement(call);
+  EXECUTE 'CREATE TEMP TABLE ' || tablename || ' AS ' || creator;
+  result := _global_record(tablename, creator);
   RETURN result;
 END;
 $$ LANGUAGE plpgsql;
 
 
-CREATE OR REPLACE FUNCTION attributes(tablename text) RETURNS SETOF pg_attribute AS $$
+CREATE OR REPLACE FUNCTION test.attributes(tablename text) RETURNS SETOF pg_attribute AS $$
 DECLARE
   rec      record;
 BEGIN

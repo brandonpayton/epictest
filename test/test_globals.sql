@@ -11,16 +11,35 @@ BEGIN
   -- The result of global() should be a normal record.
   PERFORM test.assert_equal(rec.nspname, 'test');
   
-  -- The returned record MUST possess a .tablename attribute.
-  PERFORM test.assert(rec.tablename LIKE E'\_global\_%', rec.tablename || ' not like _global');
+  -- The returned record MUST possess a .__name__ attribute.
+  PERFORM test.assert(rec.__name__ LIKE E'\_global\_%', rec.__name__ || ' not like _global');
   
-  -- The tablename MUST reference a temporary table with the same fields.
-  EXECUTE 'SELECT * FROM ' || rec.tablename INTO trec;
+  -- The .__name__ MUST reference a temporary table with the same fields.
+  EXECUTE 'SELECT * FROM ' || rec.__name__ INTO trec;
   PERFORM test.assert_equal(trec.nspname, 'test');
   PERFORM test.assert_equal(trec.nspowner, rec.nspowner);
   PERFORM test.assert_equal(trec.nspacl, rec.nspacl);
   
-  RAISE EXCEPTION '%', rec.tablename;
+  -- The returned record MUST possess a .__create__ attribute.
+  PERFORM test.assert_equal(rec.__create__, 'SELECT * FROM pg_namespace WHERE nspname = ''test''');
+  
+  -- The returned record MUST possess a .__record__ attribute.
+  PERFORM test.assert_equal(rec.__record__,
+    'SELECT * FROM _global_record(''' || rec.__name__ || ''', ''' || rec.__create__ || ''')');
+  
+  -- The returned record MUST possess an .__iter__ attribute.
+  PERFORM test.assert_equal(rec.__iter__, 'SELECT * FROM ' || rec.__name__);
+  PERFORM test.assert_not_empty(rec.__iter__);
+  
+  -- The returned record MUST possess an .__attributes__ attribute.
+  PERFORM test.assert_equal(rec.__attributes__, 'SELECT attname FROM test.attributes(''' || rec.__name__ || ''')');
+  PERFORM test.assert_column(rec.__attributes__, ARRAY['nspname', 'nspowner', 'nspacl']);
+  
+  -- The returned record MUST possess a .__len__ attribute.
+  PERFORM test.assert_equal(rec.__len__, 1);
+  
+  -- Raise an exception to test deletion of the TEMP table ON COMMIT
+  RAISE EXCEPTION '%', rec.__name__;
 END;
 $$ LANGUAGE plpgsql;
 
