@@ -226,12 +226,12 @@ $$ LANGUAGE plpgsql;
 -------------------------------- global records --------------------------------
 
 
-CREATE OR REPLACE FUNCTION _ensure_globals() RETURNS boolean AS $$
+CREATE OR REPLACE FUNCTION test._ensure_globals() RETURNS boolean AS $$
 BEGIN
   SET client_min_messages = warning;
   
   BEGIN
-    CREATE SEQUENCE _global_ids;
+    CREATE SEQUENCE test._global_ids;
   EXCEPTION WHEN duplicate_table THEN
     NULL;
   END;
@@ -239,73 +239,109 @@ BEGIN
   RETURN TRUE;
 END;
 $$ LANGUAGE plpgsql;
-SELECT * FROM _ensure_globals();
-DROP FUNCTION _ensure_globals();
+SELECT * FROM test._ensure_globals();
+DROP FUNCTION test._ensure_globals();
 
 
--- Note this is in the public schema!!
-CREATE OR REPLACE FUNCTION _global_record(tablename text, creator text) RETURNS record AS $$
+CREATE OR REPLACE FUNCTION test.global(call text, name text) RETURNS text AS $$
+-- Stores the given call's output in a TEMP table, and returns the TEMP table name.
+-- 
+-- 'call' can be any SELECT, table, view, or procedure that returns records.
 DECLARE
-  result         record;
-  record_stmt    text;
+  tablename      text;
+  creator        text;
 BEGIN
-  EXECUTE 'SELECT NULL::text AS __name__, NULL::text AS __create__, '
-       || 'NULL::text AS __record__, NULL::text AS __iter__, '
-       || 'NULL::text AS __attributes__, 0::int AS __len__, '
-       || '* FROM ' || tablename || ' LIMIT 1' INTO result;
+  IF name IS NULL THEN
+    tablename := '_global_' || nextval('_global_ids');
+  ELSE
+    tablename := name;
+  END IF;
   
-  -- We add these values outside the EXECUTE in case the TEMP table has no rows.
-  result.__name__ := tablename;
-  result.__create__ := creator;
-  result.__record__ := 'SELECT * FROM _global_record(''' || tablename || ''', ''' || creator || ''')';
-  result.__iter__ := 'SELECT * FROM ' || tablename;
-  result.__attributes__ := 'SELECT attname FROM test.attributes(''' || tablename || ''')';
-  EXECUTE 'SELECT COUNT(*) FROM ' || tablename INTO result.__len__;
+  BEGIN
+    EXECUTE 'DROP TABLE ' || tablename;
+  EXCEPTION WHEN undefined_table THEN
+    NULL;
+  END;
   
-  RETURN result;
+  creator := test.statement(call);
+  EXECUTE 'CREATE TEMP TABLE ' || tablename || ' WITHOUT OIDS AS ' || creator;
+  EXECUTE 'COMMENT ON TABLE ' || tablename || ' IS ' || quote_literal(creator);
+  RETURN tablename;
 END;
 $$ LANGUAGE plpgsql;
 
+CREATE OR REPLACE FUNCTION test.global(call text) RETURNS text AS $$
+  SELECT global FROM test.global($1, NULL);
+$$ LANGUAGE SQL;
 
--- Note this is in the public schema!!
-CREATE OR REPLACE FUNCTION global(call text) RETURNS record AS $$
--- Stores the given call's output in a TEMP table, and returns it as a record.
--- If the call produces several rows, only the first record is returned.
--- 
--- 'call' can be any SELECT, table, view, or procedure that returns records.
+CREATE OR REPLACE FUNCTION test.get(p_tablename text, p_offset int) RETURNS record AS $$
+-- Returns a record (the first one, by default) from the given global table.
 -- 
 -- The returned record includes the following additional attributes:
 --   * __name__ (text): The complete name of the TEMP table. This allows you
 --       to pass g.__name__ to functions that take a 'call text' argument,
 --       such as assert_column, assert_values, and assert_empty (since no
 --       procedural languages support passing records as args).
---   * __create__ (text): The SQL statement used to construct the table.
---   * __record__ (text): The SQL statement used to construct the returned record.
---       Use this to copy the returned record (perhaps in another function).
---       Example: EXECUTE g.__record__ INTO g2;
---   * __iter__ (text): An SQL string to SELECT * FROM the TEMP table.
---       Example: FOR record IN EXECUTE g.__iter__
---   * __attributes__ (text): The SQL string for TEMP table column names.
---       Example: FOR colname IN EXECUTE g.__attributes__
---   * __len__ (int): The number of rows in the TEMP table. This value
---       is NOT updated if you change the table after its creation.
 DECLARE
-  tablename      text;
-  creator        text;
+  result         record;
+  rownum         int;
+BEGIN
+  IF p_offset IS NULL OR p_offset < 0 THEN
+    rownum := 0;
+  ELSE
+    rownum := p_offset;
+  END IF;
+  
+  EXECUTE 'SELECT *, NULL::text AS __name__ FROM ' || p_tablename || ' LIMIT 1 OFFSET ' || rownum INTO result;
+  
+  -- We add these values outside the EXECUTE in case the SELECT returned no rows.
+  result.__name__ := p_tablename;
+  
+  RETURN result;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION test.get(p_tablename text) RETURNS record AS $$
+DECLARE
   result         record;
 BEGIN
-  tablename := '_global_' || nextval('_global_ids');
-  creator := test.statement(call);
-  EXECUTE 'CREATE TEMP TABLE ' || tablename || ' AS ' || creator;
-  result := _global_record(tablename, creator);
+  EXECUTE 'SELECT *, NULL::text AS __name__ FROM ' || p_tablename || ' LIMIT 1' INTO result;
+  
+  -- We add these values outside the EXECUTE in case the SELECT returned no rows.
+  result.__name__ := p_tablename;
+  
   RETURN result;
 END;
 $$ LANGUAGE plpgsql;
 
 
+CREATE OR REPLACE FUNCTION test.constructor(tablename text) RETURNS text AS $$
+-- Return the SQL statement used to construct the given global table.
+  SELECT obj_description(pgc.oid, 'pg_class') FROM pg_class pgc WHERE relname = $1;
+$$ LANGUAGE SQL;
+
+
+CREATE OR REPLACE FUNCTION test.len(tablename text) RETURNS int AS $$
+-- Return the number of rows in the given table.
+DECLARE
+  num    int;
+BEGIN
+  EXECUTE 'SELECT COUNT(*) FROM ' || tablename INTO num;
+  RETURN num;
+END
+$$ LANGUAGE plpgsql;
+
+
+CREATE OR REPLACE FUNCTION test.iter(tablename text) RETURNS text AS $$
+-- Return SQL to retrieve all rows in the given table.
+  SELECT 'SELECT * FROM ' || $1
+$$ LANGUAGE sql;
+
+
 CREATE OR REPLACE FUNCTION test.attributes(tablename text) RETURNS SETOF pg_attribute AS $$
 DECLARE
   rec      record;
+  seen     int := 0;
 BEGIN
   FOR rec IN
     SELECT * FROM pg_attribute
@@ -313,13 +349,18 @@ BEGIN
     -- Exclude system columns
     AND attnum >= 1
   LOOP
+    seen := seen + 1;
     RETURN NEXT rec;
   END LOOP;
+  
+  IF seen = 0 THEN
+    RAISE EXCEPTION '% has no attributes.', quote_literal(tablename);
+  END IF;
 END;
 $$ LANGUAGE plpgsql;
 
 
-CREATE OR REPLACE FUNCTION typename(elem anyelement) RETURNS text AS $$
+CREATE OR REPLACE FUNCTION test.typename(elem anyelement) RETURNS text AS $$
 -- Return the typename of the given element.
 DECLARE
   name    text;
@@ -344,11 +385,14 @@ DECLARE
   modulename      text;
   output_record   test.results%ROWTYPE;
   splitpoint      int;
+  old_search_path text;
 BEGIN
   SELECT module INTO modulename FROM test.testnames WHERE name = testname;
   DELETE FROM test.results WHERE name = testname;
   
   BEGIN
+    -- Allow test.* functions to be referenced without a schema name during this transaction.
+    PERFORM set_config('search_path', 'test, ' || current_setting('search_path'), true);
     EXECUTE 'SELECT * FROM test.' || testname || '();';
   EXCEPTION WHEN OTHERS THEN
     IF SQLSTATE = 'P0001' AND SQLERRM LIKE '[%]%' THEN
@@ -628,7 +672,7 @@ BEGIN
       END IF;
       RETURN;
   END;
-  RAISE EXCEPTION 'Call: ''%'' did not raise an error.', call;
+  RAISE EXCEPTION 'Call: % did not raise an error.', quote_literal(call);
 END;
 $$ LANGUAGE plpgsql;
 
