@@ -730,7 +730,9 @@ CREATE OR REPLACE FUNCTION test.assert_column(call text, expected anyarray, coln
 -- If colname is NULL or omitted, the first column of call's output will be used.
 --
 -- 'call' can be any table, view, or procedure that returns records.
--- 'expected' MUST be an array of the same type as colname.
+-- 'expected' MUST be an array of the same type as colname. If necessary, cast it using :: to avoid
+-- the error 'type of "record1._assert_column_result" does not match that when preparing the plan'.
+-- TODO: can this function detect the type and cast it for the user?
 -- 
 -- Example:
 --    PERFORM test.assert_column(
@@ -744,6 +746,8 @@ DECLARE
   curs_expected refcursor;
   firstname     text;
   found_1       boolean;
+  lower_bound   int;
+  base_type      text;
 BEGIN
   -- Dump the call output into a temp table
   IF colname IS NULL THEN
@@ -760,17 +764,26 @@ BEGIN
     EXECUTE 'CREATE TEMPORARY TABLE _test_assert_column_base AS ' ||
       'SELECT ' || colname || ' AS _assert_column_result FROM ' || call || ';';
   END IF;
+  SELECT INTO base_type pgt.typname
+    FROM pg_attribute pga LEFT JOIN pg_type pgt ON pga.atttypid = pgt.oid
+    WHERE pga.attrelid = (SELECT oid FROM pg_class WHERE relname = '_test_assert_column_base')
+    AND pga.attnum = 1;
+  -- Casting to ::name doesn't work so well.
+  IF base_type = 'name' THEN
+    base_type := 'text';
+  END IF;
   
   -- Dump the provided array into a temp table
   -- Use EXECUTE for all statements involving this table so its query plan
   -- doesn't get cached and re-used (or subsequent calls will fail).
   EXECUTE 'CREATE TEMPORARY TABLE _test_assert_column_expected (LIKE _test_assert_column_base);';
-  IF array_lower(expected, 1) iS NOT NULL THEN
-    FOR i IN array_lower(expected, 1)..array_upper(expected, 1)
+  lower_bound = array_lower(expected, 1);
+  IF lower_bound iS NOT NULL THEN
+    FOR i IN lower_bound..array_upper(expected, 1)
     LOOP
       IF expected[i] IS NULL THEN
         EXECUTE 'INSERT INTO _test_assert_column_expected (_assert_column_result) VALUES (NULL);';
-      ELSEIF typename(expected[i]) IN ('text', 'varchar', 'char', 'bytea', 'date', 'timestamp', 'timestamptz', 'time', 'timetz') THEN
+      ELSEIF base_type IN ('text', 'varchar', 'char', 'bytea', 'date', 'timestamp', 'timestamptz', 'time', 'timetz') THEN
         EXECUTE 'INSERT INTO _test_assert_column_expected (_assert_column_result) VALUES ('
                 || quote_literal(expected[i]) || ');';
       ELSE
