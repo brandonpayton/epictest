@@ -936,3 +936,35 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+
+CREATE OR REPLACE FUNCTION test.timing(call text, number int) RETURNS interval AS $$
+-- Return an interval encompassing 'number' runs of the given call.
+-- If 'number' is NULL or omitted, it defaults to 1000000.
+DECLARE
+  v_call   text;
+  v_number int;
+  start    timestamp with time zone;
+BEGIN
+  v_call := test.statement(call);
+  v_number := number;
+  IF number IS NULL THEN v_number := 1000000; END IF;
+  -- Mustn't use now() here since that value is fixed for the entire transaction.
+  start := clock_timestamp();
+  FOR i IN 1..v_number
+  LOOP
+    EXECUTE v_call;
+  END LOOP;
+  -- We grab the total clock time outside the loop. It's a toss-up whether the loop
+  -- overhead outweighs assignment overhead if we accumulated the time inside the loop;
+  -- therefore I chose "outside" since it makes the whole run faster. ;)
+  RETURN (clock_timestamp() - start);
+END;
+$$ LANGUAGE plpgsql;
+
+
+CREATE OR REPLACE FUNCTION test.timing(call text) RETURNS interval AS $$
+-- Return an interval encompassing 1,000 runs of the given call.
+BEGIN
+  RETURN test.timing(call, NULL);
+END;
+$$ LANGUAGE plpgsql;
