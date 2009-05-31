@@ -22,6 +22,10 @@ BEGIN
   SELECT INTO t * FROM test.statement('   generate_series()   ');
   PERFORM test.assert_equal(t, 'SELECT * FROM    generate_series()   ');
   
+  -- Test EXECUTE
+  SELECT INTO t * FROM test.statement('EXECUTE myfoo');
+  PERFORM test.assert_equal(t, 'EXECUTE myfoo');
+  
   PERFORM test.pass();
 END;
 $$ LANGUAGE plpgsql;

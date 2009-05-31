@@ -216,7 +216,7 @@ DECLARE
   result    text;
 BEGIN
   result := rtrim(call, ';');
-  IF NOT result ~* '^[[:space:]]*SELECT[[:space:]]' THEN
+  IF NOT result ~* '^[[:space:]]*(SELECT|EXECUTE)[[:space:]]' THEN
     result := 'SELECT * FROM ' || result;
   END IF;
   RETURN result;
