@@ -211,11 +211,12 @@ CREATE OR REPLACE VIEW test.testnames AS
 
 
 CREATE OR REPLACE FUNCTION test.statement(call text) RETURNS text AS $$
+-- Returns the given SQL string, prepending "SELECT * FROM " if missing.
 DECLARE
   result    text;
 BEGIN
   result := rtrim(call, ';');
-  IF NOT result ILIKE 'SELECT%' THEN
+  IF NOT result ~* '^[[:space:]]*SELECT[[:space:]]' THEN
     result := 'SELECT * FROM ' || result;
   END IF;
   RETURN result;
@@ -227,6 +228,7 @@ $$ LANGUAGE plpgsql;
 
 
 CREATE OR REPLACE FUNCTION test._ensure_globals() RETURNS boolean AS $$
+-- Creates the global id sequence if it does not already exist.
 BEGIN
   SET client_min_messages = warning;
   
@@ -702,7 +704,7 @@ CREATE OR REPLACE FUNCTION test.assert_rows(call_1 text, call_2 text) RETURNS VO
 -- Example:
 -- 
 --    PERFORM test.assert_rows('SELECT first, last, city FROM table1',
---                             'SELECT ''Davy'', ''Crockett'', NULL';
+--                             'SELECT ''Davy'', ''Crockett'', NULL');
 DECLARE
   rec     record;
   s       text;
@@ -751,6 +753,8 @@ DECLARE
 BEGIN
   -- Dump the call output into a temp table
   IF colname IS NULL THEN
+    -- No colname; instead, create the temp table and then read the catalog
+    -- to grab the name of the first column.
     EXECUTE 'CREATE TEMPORARY TABLE _test_assert_column_base AS ' || test.statement(call);
     SELECT INTO firstname a.attname
       FROM pg_class c LEFT JOIN pg_attribute a ON c.oid = a.attrelid
