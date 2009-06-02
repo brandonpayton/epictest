@@ -257,7 +257,7 @@ DECLARE
   creator        text;
 BEGIN
   IF name IS NULL THEN
-    tablename := '_global_' || nextval('_global_ids');
+    tablename := '_global_' || nextval('test._global_ids');
   ELSE
     tablename := name;
   END IF;
