@@ -359,7 +359,7 @@ BEGIN
     'generate_series');
   -- text fields
   PERFORM test.assert_column(
-    'pg_namespace WHERE nspname IN (''public'', ''test'')',
+    'pg_namespace WHERE nspname IN (''public'', ''test'') ORDER BY nspname',
     ARRAY['public', 'test'],
     'nspname');
   -- timestamp fields. This also tests omitted colname
