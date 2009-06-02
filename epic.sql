@@ -723,7 +723,7 @@ BEGIN
     RAISE EXCEPTION 'Record: % from: % not found in: %', rec, call_2, call_1;
   END LOOP;
 END;
-$$ LANGUAGE plpgsql IMMUTABLE;
+$$ LANGUAGE plpgsql;
 
 
 CREATE OR REPLACE FUNCTION test.assert_column(call text, expected anyarray, colname text) RETURNS VOID AS $$
