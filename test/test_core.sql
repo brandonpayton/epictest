@@ -26,6 +26,12 @@ BEGIN
   SELECT INTO t * FROM test.statement('EXECUTE myfoo');
   PERFORM test.assert_equal(t, 'EXECUTE myfoo');
   
+  -- Test VALUES
+  SELECT INTO t * FROM test.statement('VALUES (99, ''foo'')');
+  PERFORM test.assert_equal(t, 'VALUES (99, ''foo'')');
+  SELECT INTO t * FROM test.statement('VALUES(99, ''foo'')');
+  PERFORM test.assert_equal(t, 'VALUES(99, ''foo'')');
+  
   PERFORM test.pass();
 END;
 $$ LANGUAGE plpgsql;

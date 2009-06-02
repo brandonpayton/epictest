@@ -216,10 +216,13 @@ DECLARE
   result    text;
 BEGIN
   result := rtrim(call, ';');
-  IF NOT result ~* '^[[:space:]]*(SELECT|EXECUTE)[[:space:]]' THEN
-    result := 'SELECT * FROM ' || result;
+  IF result ~* '^[[:space:]]*(SELECT|EXECUTE)[[:space:]]' THEN
+    return result;
+  ELSIF result ~* E'^[[:space:]]*(VALUES)[[:space:]]*\\(' THEN
+    return result;
+  ELSE
+    return 'SELECT * FROM ' || result;
   END IF;
-  RETURN result;
 END;
 $$ LANGUAGE plpgsql;
 
