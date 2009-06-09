@@ -89,6 +89,12 @@ END;
 $$ LANGUAGE plpgsql;
 
 
+CREATE OR REPLACE FUNCTION test._return_void() RETURNS VOID AS $$
+BEGIN
+  RETURN;
+END;
+$$ LANGUAGE plpgsql;
+
 CREATE OR REPLACE FUNCTION test.test_assert_void() RETURNS VOID AS $$
 -- Assert the correct operation of test.assert_void
 -- module: test_asserts
@@ -96,7 +102,7 @@ DECLARE
   retval    text;
 BEGIN
   -- assert_void() MUST return VOID if the given call returns VOID.
-  SELECT INTO retval * FROM test.assert_void('pg_sleep(0.1)');
+  SELECT INTO retval * FROM test.assert_void('test._return_void()');
   IF retval != '' THEN
     RAISE EXCEPTION 'assert_void did not itself return void. Got ''%'' instead.', retval;
   END IF;

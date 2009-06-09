@@ -176,9 +176,24 @@ without having to run a whole set of tests you didn't modify.
 
 */
 
-CREATE OR REPLACE FUNCTION assert_test_schema() RETURNS boolean AS $$
+CREATE OR REPLACE FUNCTION _epic_init() RETURNS boolean AS $$
+DECLARE
+  t        text;
 BEGIN
   SET client_min_messages = warning;
+  
+  BEGIN
+    RAISE EXCEPTION 'ignore me';
+  EXCEPTION WHEN OTHERS THEN
+    BEGIN
+      t := SQLSTATE;
+      t := SQLERRM;
+    EXCEPTION WHEN undefined_column THEN
+      -- PG 8.0 did not have SQLSTATE, SQLERRM available. Epic relies
+      -- on the ability to distinguish one error from another.
+      RAISE EXCEPTION 'Epic requires at least PostgreSQL version 8.1';
+    END;
+  END;
   
   BEGIN
     CREATE SCHEMA test;
@@ -188,7 +203,8 @@ BEGIN
   
   BEGIN
     CREATE TABLE test.results (name text PRIMARY KEY, module text,
-                               result text, errcode text, errmsg text);
+                               result text, errcode text, errmsg text,
+                               runtime timestamp with time zone default now());
   EXCEPTION WHEN duplicate_table THEN
     NULL;
   END;
@@ -197,8 +213,8 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
-SELECT * FROM assert_test_schema();
-DROP FUNCTION assert_test_schema();
+SELECT * FROM _epic_init();
+DROP FUNCTION _epic_init();
 
 
 CREATE OR REPLACE VIEW test.testnames AS
@@ -207,7 +223,7 @@ CREATE OR REPLACE VIEW test.testnames AS
   FROM pg_namespace LEFT JOIN pg_proc
   ON pg_proc.pronamespace::oid = pg_namespace.oid::oid
   WHERE pg_namespace.nspname = 'test'
-    AND pg_proc.proname LIKE E'test\_%';
+    AND pg_proc.proname LIKE 'test_%';
 
 
 CREATE OR REPLACE FUNCTION test.statement(call text) RETURNS text AS $$
@@ -218,7 +234,7 @@ BEGIN
   result := rtrim(call, ';');
   IF result ~* '^[[:space:]]*(SELECT|EXECUTE)[[:space:]]' THEN
     return result;
-  ELSIF result ~* E'^[[:space:]]*(VALUES)[[:space:]]*\\(' THEN
+  ELSIF result ~* '^[[:space:]]*(VALUES)[[:space:]]*\\(' THEN
     return result;
   ELSE
     return 'SELECT * FROM ' || result;
@@ -347,6 +363,7 @@ CREATE OR REPLACE FUNCTION test.attributes(tablename text) RETURNS SETOF pg_attr
 DECLARE
   rec      record;
   seen     int := 0;
+  msg      text;
 BEGIN
   FOR rec IN
     SELECT * FROM pg_attribute
@@ -359,7 +376,8 @@ BEGIN
   END LOOP;
   
   IF seen = 0 THEN
-    RAISE EXCEPTION '% has no attributes.', quote_literal(tablename);
+    msg := quote_literal(tablename);
+    RAISE EXCEPTION '% has no attributes.', msg;
   END IF;
 END;
 $$ LANGUAGE plpgsql;
@@ -390,7 +408,6 @@ DECLARE
   modulename      text;
   output_record   test.results%ROWTYPE;
   splitpoint      int;
-  old_search_path text;
 BEGIN
   SELECT module INTO modulename FROM test.testnames WHERE name = testname;
   DELETE FROM test.results WHERE name = testname;
@@ -398,20 +415,21 @@ BEGIN
   BEGIN
     -- Allow test.* functions to be referenced without a schema name during this transaction.
     PERFORM set_config('search_path', 'test, ' || current_setting('search_path'), true);
-    EXECUTE 'SELECT * FROM test.' || testname || '();';
+    EXECUTE 'SELECT * FROM test.' || testname || '();' INTO output_record;
+    RETURN output_record;
   EXCEPTION WHEN OTHERS THEN
     IF SQLSTATE = 'P0001' AND SQLERRM LIKE '[%]%' THEN
       splitpoint := position(']' in SQLERRM);
       INSERT INTO test.results (name, module, result, errcode, errmsg)
         VALUES (testname, modulename, substr(SQLERRM, 1, splitpoint),
                 CASE WHEN SQLERRM LIKE '[FAIL]%' THEN SQLSTATE ELSE '' END,
-                btrim(substr(SQLERRM, splitpoint + 1)))
-        RETURNING * INTO output_record;
+                btrim(substr(SQLERRM, splitpoint + 1)));
+      SELECT INTO output_record * FROM test.results WHERE name = testname;
       RETURN output_record;
     ELSE
       INSERT INTO test.results (name, module, result, errcode, errmsg)
-        VALUES (testname, modulename, '[FAIL]', SQLSTATE, SQLERRM)
-        RETURNING * INTO output_record;
+        VALUES (testname, modulename, '[FAIL]', SQLSTATE, SQLERRM);
+      SELECT INTO output_record * FROM test.results WHERE name = testname;
       RETURN output_record;
     END IF;
   END;
@@ -424,7 +442,7 @@ $$ LANGUAGE plpgsql;
 CREATE OR REPLACE FUNCTION test.run_module(modulename text) RETURNS SETOF test.results AS $$
 -- Runs all tests in the given module, stores in test.results, and returns results.
 DECLARE
-  testname        pg_proc.proname%TYPE;
+  testname        record;
   output_record   test.results%ROWTYPE;
 BEGIN
   FOR testname IN SELECT name FROM test.testnames WHERE module = modulename ORDER BY name ASC
@@ -439,18 +457,19 @@ $$ LANGUAGE plpgsql;
 CREATE OR REPLACE FUNCTION test.run_all() RETURNS SETOF test.results AS $$
 -- Runs all known test functions, stores in test.results, and returns results.
 DECLARE
-  testname pg_proc.proname%TYPE;
-  modulename text;
+  testname record;
+  modulename record;
   output_record test.results%ROWTYPE;
 BEGIN
   FOR modulename in SELECT DISTINCT module FROM test.testnames ORDER BY module ASC
   LOOP
-    FOR testname IN SELECT name FROM test.testnames WHERE module = modulename ORDER BY name ASC
+    FOR testname IN SELECT name FROM test.testnames WHERE module = modulename.module ORDER BY name ASC
     LOOP
-      SELECT INTO output_record * FROM test.run_test(testname);
+      SELECT INTO output_record * FROM test.run_test(testname.name);
       RETURN NEXT output_record;
     END LOOP;
   END LOOP;
+  RETURN;
 END;
 $$ LANGUAGE plpgsql;
 
@@ -540,6 +559,7 @@ BEGIN
   IF retval != '' THEN
     RAISE EXCEPTION 'Call: ''%'' did not return void. Got ''%'' instead.', call, retval;
   END IF;
+  RETURN;
 END;
 $$ LANGUAGE plpgsql;
 
@@ -556,6 +576,7 @@ BEGIN
   IF NOT assertion THEN
     RAISE EXCEPTION '%', msg;
   END IF;
+  RETURN;
 END;
 $$ LANGUAGE plpgsql IMMUTABLE;
 
@@ -571,6 +592,7 @@ BEGIN
       elem_1 != elem_2) THEN
     RAISE EXCEPTION '% != %', elem_1, elem_2;
   END IF;
+  RETURN;
 END;
 $$ LANGUAGE plpgsql IMMUTABLE;
 
@@ -584,6 +606,7 @@ BEGIN
   IF ((elem_1 IS NULL AND elem_2 IS NULL) OR elem_1 = elem_2) THEN
     RAISE EXCEPTION '% = %', elem_1, elem_2;
   END IF;
+  RETURN;
 END;
 $$ LANGUAGE plpgsql IMMUTABLE;
 
@@ -600,6 +623,7 @@ BEGIN
   IF NOT (elem_1 < elem_2) THEN
     RAISE EXCEPTION '% not < %', elem_1, elem_2;
   END IF;
+  RETURN;
 END;
 $$ LANGUAGE plpgsql IMMUTABLE;
 
@@ -616,6 +640,7 @@ BEGIN
   IF NOT (elem_1 <= elem_2) THEN
     RAISE EXCEPTION '% not <= %', elem_1, elem_2;
   END IF;
+  RETURN;
 END;
 $$ LANGUAGE plpgsql IMMUTABLE;
 
@@ -632,6 +657,7 @@ BEGIN
   IF NOT (elem_1 > elem_2) THEN
     RAISE EXCEPTION '% not > %', elem_1, elem_2;
   END IF;
+  RETURN;
 END;
 $$ LANGUAGE plpgsql IMMUTABLE;
 
@@ -648,6 +674,7 @@ BEGIN
   IF NOT (elem_1 >= elem_2) THEN
     RAISE EXCEPTION '% not >= %', elem_1, elem_2;
   END IF;
+  RETURN;
 END;
 $$ LANGUAGE plpgsql IMMUTABLE;
 
@@ -666,6 +693,8 @@ CREATE OR REPLACE FUNCTION test.assert_raises(call text, errm text, state text) 
 -- If you don't know the message you want to trap, call this function with
 -- errm = '' and state = ''. The resultant error will tell you the
 -- SQLSTATE and SQLERRM that were raised.
+DECLARE
+  msg       text;
 BEGIN
   BEGIN
     EXECUTE test.statement(call);
@@ -673,11 +702,13 @@ BEGIN
     WHEN OTHERS THEN
       IF ((state IS NOT NULL AND SQLSTATE != state) OR
           (errm IS NOT NULL AND SQLERRM != errm)) THEN
-        RAISE EXCEPTION 'Call: ''%'' raised ''(%) %'' instead of ''(%) %''.', call, SQLSTATE, SQLERRM, state, errm;
+        msg = 'Call: ''' || call || ''' raised ''(' || SQLSTATE || ') ' || SQLERRM || ''' instead of ''(' || state || ') ' || errm || '''.';
+        RAISE EXCEPTION '%', msg;
       END IF;
       RETURN;
   END;
-  RAISE EXCEPTION 'Call: % did not raise an error.', quote_literal(call);
+  msg := 'Call: ' || quote_literal(call) || ' did not raise an error.';
+  RAISE EXCEPTION '%', msg;
 END;
 $$ LANGUAGE plpgsql;
 
@@ -712,6 +743,7 @@ DECLARE
   rec     record;
   s       text;
   e       text;
+  msg     text;
 BEGIN
   s := test.statement(call_1);
   e := test.statement(call_2);
@@ -725,6 +757,7 @@ BEGIN
   LOOP
     RAISE EXCEPTION 'Record: % from: % not found in: %', rec, call_2, call_1;
   END LOOP;
+  RETURN;
 END;
 $$ LANGUAGE plpgsql;
 
@@ -752,7 +785,8 @@ DECLARE
   firstname     text;
   found_1       boolean;
   lower_bound   int;
-  base_type      text;
+  base_type     text;
+  msg           text;
 BEGIN
   -- Dump the call output into a temp table
   IF colname IS NULL THEN
@@ -825,13 +859,15 @@ BEGIN
   EXCEPTION WHEN OTHERS THEN
     DROP TABLE _test_assert_column_base;
     EXECUTE 'DROP TABLE _test_assert_column_expected';
-    RAISE EXCEPTION '%', SQLERRM;
-  END TRY;
+    msg := SQLERRM;
+    RAISE EXCEPTION '%', msg;
+  END;
   
   CLOSE curs_base;
   CLOSE curs_expected;
   DROP TABLE _test_assert_column_base;
   EXECUTE 'DROP TABLE _test_assert_column_expected';
+  RETURN;
 END;
 $$ LANGUAGE plpgsql;
 
@@ -855,6 +891,7 @@ BEGIN
     'SELECT ' || columns || ' FROM ' || call_1,
     'SELECT ' || columns || ' FROM ' || call_2
     );
+  RETURN;
 END;
 $$ LANGUAGE plpgsql;
 
@@ -863,7 +900,7 @@ CREATE OR REPLACE FUNCTION test.assert_empty(calls text[]) RETURNS VOID AS $$
 -- Raises an exception if the given calls have any rows.
 DECLARE
   result      bool;
-  failed      text[];
+  failed      text[] DEFAULT '{}'::text[];
   failed_len  int;
 BEGIN
   IF array_lower(calls, 1) IS NOT NULL THEN
@@ -884,6 +921,7 @@ BEGIN
       PERFORM test.fail('The calls ' || array_to_string(failed, ', ') || ' are not empty.');
     END IF;
   END IF;
+  RETURN;
 END;
 $$ LANGUAGE plpgsql;
 
@@ -896,6 +934,7 @@ BEGIN
   IF result THEN
     PERFORM test.fail('The call "' || call || '" is not empty.');
   END IF;
+  RETURN;
 END;
 $$ LANGUAGE plpgsql;
 
@@ -928,6 +967,7 @@ BEGIN
       PERFORM test.fail('The calls ' || array_to_string(failed, ', ') || ' are empty.');
     END IF;
   END IF;
+  RETURN;
 END;
 $$ LANGUAGE plpgsql;
 
@@ -940,6 +980,7 @@ BEGIN
   IF NOT result THEN
     PERFORM test.fail('The call "' || call || '" is empty.');
   END IF;
+  RETURN;
 END;
 $$ LANGUAGE plpgsql;
 
@@ -956,7 +997,8 @@ BEGIN
   v_number := number;
   IF number IS NULL THEN v_number := 1000000; END IF;
   -- Mustn't use now() here since that value is fixed for the entire transaction.
-  start := clock_timestamp();
+  -- Also, clock_timestamp isn't available until 8.2 so we use timeofday instead.
+  start := timeofday()::timestamp;
   FOR i IN 1..v_number
   LOOP
     EXECUTE v_call;
@@ -964,7 +1006,7 @@ BEGIN
   -- We grab the total clock time outside the loop. It's a toss-up whether the loop
   -- overhead outweighs assignment overhead if we accumulated the time inside the loop;
   -- therefore I chose "outside" since it makes the whole run faster. ;)
-  RETURN (clock_timestamp() - start);
+  RETURN (timeofday()::timestamp - start);
 END;
 $$ LANGUAGE plpgsql;
 
